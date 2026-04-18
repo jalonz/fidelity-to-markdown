@@ -16,7 +16,6 @@ htmlcov/
 dist/
 build/
 *.log
-out/
 
 # OS/editor
 .DS_Store
