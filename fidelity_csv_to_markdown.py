@@ -283,7 +283,7 @@ def main():
     def out_dir_for(csv_path: Path) -> Path:
         if args.outdir:
             return Path(args.outdir).expanduser().resolve()
-        return csv_path.parent if args.csvdir else Path(".")
+        return csv_path.parent
 
     total = len(csv_files)
     batch = total > 1

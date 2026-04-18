@@ -36,20 +36,22 @@ source activate_env.sh
 
 ### CSV → Markdown
 
+```
+usage: fidelity_csv_to_markdown.py (--csv FILE | --csvdir DIR) --contract FILE [--outdir DIR] [--dry-run] [--verbose] [--quiet]
+```
+
 Single file:
 ```bash
 python fidelity_csv_to_markdown.py \
   --csv path/to/positions.csv \
-  --contract fidelity_csv_to_markdown.yaml \
-  --outdir ./out
+  --contract fidelity_csv_to_markdown.yaml
 ```
 
 Batch (all CSVs in a directory):
 ```bash
 python fidelity_csv_to_markdown.py \
   --csvdir path/to/exports/ \
-  --contract fidelity_csv_to_markdown.yaml \
-  --outdir ./out
+  --contract fidelity_csv_to_markdown.yaml
 ```
 
 **Arguments:**
@@ -59,7 +61,7 @@ python fidelity_csv_to_markdown.py \
 | `--csv` | Yes (or `--csvdir`) | Single Fidelity positions CSV |
 | `--csvdir` | Yes (or `--csv`) | Directory of CSVs to process |
 | `--contract` | Yes | Path to the YAML contract file |
-| `--outdir` | No | Output directory (default: current dir for `--csv`; alongside each input file for `--csvdir`) |
+| `--outdir` | No | Output directory (default: alongside each input file) |
 | `--dry-run` | No | Validate without writing output |
 | `--verbose` | No | Detailed block output per file instead of one-line summary |
 | `--quiet` | No | Suppress all output except errors |

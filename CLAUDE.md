@@ -23,12 +23,12 @@ source activate_env.sh  # activate venv (subsequent sessions)
 
 Single file:
 ```bash
-python fidelity_csv_to_markdown.py --csv positions.csv --contract fidelity_csv_to_markdown.yaml --outdir ./out
+python fidelity_csv_to_markdown.py --csv positions.csv --contract fidelity_csv_to_markdown.yaml
 ```
 
 Batch (all CSVs in a directory):
 ```bash
-python fidelity_csv_to_markdown.py --csvdir ./exports/ --contract fidelity_csv_to_markdown.yaml --outdir ./out
+python fidelity_csv_to_markdown.py --csvdir ./exports/ --contract fidelity_csv_to_markdown.yaml
 ```
 
 Key flags: `--dry-run` (validate without writing), `--verbose` (detailed block output per file), `--quiet` (errors only).
