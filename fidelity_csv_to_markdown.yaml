@@ -1,0 +1,78 @@
+contract:
+  name: fidelity_positions_single_account_csv_to_markdown
+  version: 2.0.0
+  previous_version: 1.0.0
+  effective_date: '2026-04-18'
+  description: Fidelity positions CSV (single account) → markdown table with all columns preserved and strict validation.
+changelog:
+- version: 2.0.0
+  date: '2026-04-18'
+  changes:
+  - Add column_aliases map to input_cleanup (rename columns before processing).
+  - Add drop_columns list to input_cleanup (intentionally remove columns from output).
+- version: 1.0.0
+  date: '2026-03-26'
+  changes:
+  - Derived from fidelity_positions_single_account_csv_to_parquet v1.0.0.
+  - Replaced Parquet output with a single markdown table.
+  - Removed lossless/optimized layer concept; all original columns preserved as-is.
+  - Removed companion column derivation (__usd, __pct).
+  - Verification is pre-write in-memory (no round-trip read-back required).
+task: convert_fidelity_positions_single_account_csv_to_markdown
+input:
+  type: csv
+  source: fidelity_positions_export
+  characteristics:
+  - positions_only
+  - one_row_per_holding
+  - may_contain_trailing_commas
+  - may_contain_footer_rows
+  - values_may_include_currency_symbols
+  - values_may_include_percentage_symbols
+  - column_names_may_include_currency_or_percentage_symbols
+validation:
+  enforce_positions_format: true
+  drop_non_position_rows: true
+output:
+  markdown:
+    include_all_columns: true
+    preserve_column_order: true
+    preserve_string_values: true
+    purpose: llm_analysis
+    filename_policy:
+      pattern: '{account_name}__{account_number}.md'
+      fields:
+        account_name:
+          source_column: Account Name
+          normalize:
+            lowercase: true
+            replace_non_alphanumeric: _
+            preserve: [_, -]
+            max_length: 100
+        account_number:
+          source_column: Account Number
+          normalize:
+            lowercase: true
+            remove_non_alphanumeric: true
+constraints:
+- no_silent_type_coercion
+- no_column_renaming
+- no_column_dropping
+- preserve_original_string_values
+input_cleanup:
+  column_aliases: {}
+  drop_columns: []
+  drop_rows:
+  - column: Account Number
+    regex: Date downloaded
+  footer_detection_policy:
+    intent: Drop disclaimer/footer/metadata rows while never dropping legitimate holdings.
+    do_not_use_as_markers:
+    - fidelity
+    prefer_disclaimer_markers:
+    - the data and information in this spreadsheet
+    - brokerage services are provided by fidelity brokerage
+    - for informational purposes only
+    - fidelity.com
+    notes:
+    - Generic brand tokens can appear in security names and must not be used as drop markers.

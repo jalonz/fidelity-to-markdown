@@ -1,0 +1,38 @@
+# Python virtual environments
+.venv/
+.env
+.env.*
+
+# Python cache/coverage/tooling artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Build/artifacts
+dist/
+build/
+*.log
+out/
+
+# OS/editor
+.DS_Store
+.vscode/
+.idea/
+
+# Fidelity exports and generated output (contain account data)
+*.csv
+*.md
+!README.md
+!CLAUDE.md
+!tests/fixtures/*.csv
+
+# Secrets (never commit)
+secrets/
+**/secrets/
+*.key
+*.pem
+*.p12
