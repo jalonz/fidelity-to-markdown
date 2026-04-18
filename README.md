@@ -1,6 +1,6 @@
 # fidelity-to-markdown
 
-Converts Fidelity brokerage positions CSV exports into LLM-ready markdown for portfolio analysis.
+Converts Fidelity CSV exports into LLM-ready markdown for portfolio analysis.
 
 The intended workflow: export your positions from Fidelity → run the script → provide the markdown output to Claude, ChatGPT, or another LLM for analysis (allocation review, tax lot examination, drift detection, etc.). The script preserves all values as strings — no numeric coercion — so the LLM sees exactly what Fidelity shows.
 
