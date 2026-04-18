@@ -1,8 +1,8 @@
 # fidelity-to-markdown
 
-Converts Fidelity CSV exports into LLM-ready markdown for portfolio analysis.
+Converts Fidelity "Positions" CSV exports into LLM-ready markdown for portfolio analysis.
 
-The intended workflow: export your positions from Fidelity → run the script → provide the markdown output to Claude, ChatGPT, or another LLM for analysis (allocation review, tax lot examination, drift detection, etc.). The script preserves all values as strings — no numeric coercion — so the LLM sees exactly what Fidelity shows.
+The intended workflow: export your account positions from Fidelity → run the script → provide the markdown output to Claude, ChatGPT, or another LLM for analysis (allocation review, tax lot examination, drift detection, etc.). The script preserves all values as strings — no numeric coercion — so the LLM sees exactly what Fidelity shows.
 
 ---
 
@@ -10,9 +10,9 @@ The intended workflow: export your positions from Fidelity → run the script �
 
 ### `fidelity_csv_to_markdown.py`
 
-Converts a Fidelity positions CSV export into one markdown table per account. Supports single-file and batch (directory) mode. Each output file is named `{account_name}__{account_number}.md`.
+Converts Fidelity "Positions" CSV exports into markdown format. Supports single-file and batch (directory) mode. Each output file is named `{account_name}__{account_number}.md`.
 
-> Additional scripts may be added as the ETL surface expands. Each script owns its own contract file — they are not shared.
+> Note that exporting the "All Accounts" positions CSV will not work. Ensure there is only one Fidelity account per export file.
 
 ---
 
