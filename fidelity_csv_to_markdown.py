@@ -2,10 +2,28 @@
 """
 fidelity_csv_to_markdown
 
-Version: 2.1.0
-Date: 2026-04-18
+Version: 2.2.0
+Date: 2026-05-20
 
 Changelog:
+- v2.2.0 (2026-05-20)
+  - Reject multi-account CSVs: abort with a clear error if a single CSV
+    contains positions for more than one Account Number (previously mis-labeled
+    the output from row 0).
+  - Reject output filename collisions: abort if the computed output path
+    already exists (previously silently overwrote).
+  - --verbose and --quiet are now mutually exclusive at argparse level (was a
+    silent override of --verbose by --quiet).
+  - --csvdir glob is case-insensitive: matches Positions.CSV / Export.Csv.
+  - Reformatted argparse error output: blank-line-separated ERROR + two-line
+    usage hint + pointer to --help. --help output is unchanged.
+  - Standardized validation failures on AssertionError; required-column checks
+    previously raised KeyError.
+  - convert_csv now returns a ConvertResult dataclass instead of a dict.
+  - Internal: _position_pairs helper hoists per-row norm_str calls; _bar no
+    longer renders a stray '>' on the empty first frame; assorted no-op
+    cleanups (dead A-Z in normalize_account_number, redundant .astype(str)
+    calls, unused prefix parameter on print helpers).
 - v2.1.0 (2026-04-18)
   - Output modes redesigned: default is brief one-line summary; --verbose for
     full detail block; --quiet suppresses all stdout (errors only on stderr).

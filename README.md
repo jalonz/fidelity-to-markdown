@@ -12,7 +12,9 @@ The intended workflow: export your account positions from Fidelity → run the s
 
 Converts Fidelity "Positions" CSV exports into markdown format. Supports single-file and batch (directory) mode. Each output file is named `{account_name}__{account_number}.md`.
 
-> Note that exporting the "All Accounts" positions CSV will not work. Ensure there is only one Fidelity account per export file.
+> **One account per CSV.** The script rejects multi-account exports with a clear error listing the distinct account numbers found. Export each account separately from Fidelity (do not use "All Accounts").
+>
+> **No silent overwrites.** If `{account_name}__{account_number}.md` already exists in the output directory, the script aborts rather than overwriting it. Remove or move the existing file to rerun.
 
 ---
 
