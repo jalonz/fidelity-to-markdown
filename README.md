@@ -70,7 +70,7 @@ python fidelity_csv_to_markdown.py \
 
 ## Fidelity Portal Column Selection
 
-The script is contract-driven — it works with whatever columns are present — but the column set below is optimized for LLM portfolio analysis. Configure **My View** in the Fidelity positions page before exporting to include these columns. An LLM given this data can reason about allocation, cost basis, embedded gains, income, fund costs, and sector exposure in a single pass.
+The script is contract-driven — optional columns can be added, removed, or renamed via the contract without code changes — but the column set below is optimized for LLM portfolio analysis. Four columns are required and the run will abort if any are missing: `Account Name`, `Account Number`, `Symbol`, `Current value`. Configure **My View** in the Fidelity positions page before exporting to include these columns. An LLM given this data can reason about allocation, cost basis, embedded gains, income, fund costs, and sector exposure in a single pass.
 
 **Account & position identity**
 - Account Number
@@ -138,6 +138,13 @@ Each script is paired with a YAML contract file that externalizes cleanup rules,
 | Contract | Used by |
 | --- | --- |
 | `fidelity_csv_to_markdown.yaml` | `fidelity_csv_to_markdown.py` |
+
+Key contract knobs under `input_cleanup`:
+
+- `column_aliases` — rename incoming columns before processing (e.g. handle Fidelity layout changes without renaming downstream).
+- `drop_columns` — remove columns from the output entirely.
+- `drop_rows` — regex-match rows to drop (e.g. `Date downloaded` summary rows).
+- `footer_detection_policy.prefer_disclaimer_markers` — case-insensitive substrings that mark disclaimer/footer rows for removal.
 
 To adapt the pipeline to a different CSV layout or add cleanup rules, update the contract — the script logic should not need to change.
 
