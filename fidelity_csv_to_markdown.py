@@ -60,7 +60,7 @@ def normalize_account_name(value: str) -> str:
 
 
 def normalize_account_number(value: str) -> str:
-    return re.sub(r"[^a-zA-Z0-9]", "", value.lower())
+    return re.sub(r"[^a-z0-9]", "", value.lower())
 
 
 def norm_str(val: object) -> str:
@@ -118,10 +118,10 @@ def convert_csv(csv_path: Path, contract: dict, out_dir: Path, dry_run: bool) ->
             print(f"WARNING: drop_rows column '{col}' not in CSV — skipped", file=sys.stderr)
             continue
         if regex:
-            df = df[~df[col].astype(str).str.match(regex, na=False)]
+            df = df[~df[col].str.match(regex, na=False)]
 
     # Drop columns per contract
-    drop_cols = cleanup.get("drop_columns", []) or []
+    drop_cols = cleanup.get("drop_columns") or []
     for col in drop_cols:
         if col in df.columns:
             df = df.drop(columns=[col])
@@ -133,7 +133,7 @@ def convert_csv(csv_path: Path, contract: dict, out_dir: Path, dry_run: bool) ->
     if markers:
         markers_lc = [m.lower() for m in markers if isinstance(m, str) and m.strip()]
         if markers_lc:
-            row_text = df.fillna("").astype(str).agg(" | ".join, axis=1).str.lower()
+            row_text = df.fillna("").agg(" | ".join, axis=1).str.lower()
             pattern = "|".join(re.escape(m) for m in markers_lc)
             df = df[~row_text.str.contains(pattern, regex=True, na=False)]
 
@@ -209,9 +209,8 @@ def convert_csv(csv_path: Path, contract: dict, out_dir: Path, dry_run: bool) ->
 # Output formatting
 # ================================
 
-def print_result_verbose(r: dict, prefix: str = "") -> None:
-    header = f"{prefix}=== {r['out_path'].name} ==="
-    print(header)
+def print_result_verbose(r: dict) -> None:
+    print(f"=== {r['out_path'].name} ===")
     print(f"account   {r['account_name']} ({r['account_number']})")
     print(f"rows      {r['rows']}  cols  {r['cols']}  size  {r['size']}")
     print(f"contract  {r['contract_name']} v{r['contract_version']}")
@@ -223,10 +222,10 @@ def print_result_verbose(r: dict, prefix: str = "") -> None:
         print(f"  {sym:<12} {val}{suffix}")
 
 
-def print_result_quiet(r: dict, prefix: str = "") -> None:
+def print_result_quiet(r: dict) -> None:
     tag = " [dry-run]" if r["dry_run"] else ""
     print(
-        f"✓ {prefix}{r['out_path'].name}"
+        f"✓ {r['out_path'].name}"
         f"  {r['account_name']} ({r['account_number']})"
         f"  rows={r['rows']} pos={r['positions']} size={r['size']}{tag}"
     )
@@ -246,8 +245,9 @@ def main():
     parser.add_argument("--contract", required=True, help="YAML contract path")
     parser.add_argument("--outdir", help="Output directory (default: alongside each input file)")
     parser.add_argument("--dry-run", action="store_true", help="Validate without writing output")
-    parser.add_argument("--verbose", action="store_true", help="Detailed block output per file")
-    parser.add_argument("--quiet", action="store_true", help="Suppress all output except errors")
+    output_mode = parser.add_mutually_exclusive_group()
+    output_mode.add_argument("--verbose", action="store_true", help="Detailed block output per file")
+    output_mode.add_argument("--quiet", action="store_true", help="Suppress all output except errors")
 
     args = parser.parse_args()
 
@@ -275,7 +275,7 @@ def main():
         if not d.is_dir():
             print(f"ERROR: not a directory: {d}", file=sys.stderr)
             sys.exit(1)
-        csv_files = sorted(d.glob("*.csv"))
+        csv_files = sorted(p for p in d.iterdir() if p.is_file() and p.suffix.lower() == ".csv")
         if not csv_files:
             print(f"ERROR: no CSV files found in {d}", file=sys.stderr)
             sys.exit(1)
