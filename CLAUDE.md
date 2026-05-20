@@ -31,7 +31,7 @@ Batch (all CSVs in a directory):
 python fidelity_csv_to_markdown.py --csvdir ./exports/ --contract fidelity_csv_to_markdown.yaml
 ```
 
-Key flags: `--dry-run` (validate without writing), `--verbose` (detailed block output per file), `--quiet` (errors only).
+Key flags: `--dry-run` (validate without writing), `--verbose` (detailed block output per file), `--quiet` (errors only), `--outdir DIR` (override output location; default is alongside each input CSV).
 
 Output files are named `{account_name}__{account_number}.md`.
 
@@ -43,16 +43,16 @@ Single-script ETL pipeline per data source. Each script is paired with a YAML co
 
 **Data flow:**
 1. Read CSV with `dtype=str` — all values preserved as strings, no coercion
-2. Load YAML contract (drop rules, footer markers, validation policy)
-3. Drop rows matching contract regex rules; strip footer/disclaimer rows
+2. Load YAML contract (column aliases, drop rules, footer markers, validation policy)
+3. Apply `column_aliases` (rename); drop rows matching contract regex rules; drop columns in `drop_columns`; strip footer/disclaimer rows
 4. Verify integrity: required columns present, no positions lost (uses `Counter` to catch duplicate holdings), non-zero rows, non-empty account identifiers
-5. Write one markdown file per account via `DataFrame.to_markdown(index=False)`
+5. Write one markdown file per input CSV via `DataFrame.to_markdown(index=False)`, named from the first row's `Account Name` / `Account Number`. The script does not split multi-account CSVs — callers must export one account per CSV.
 
 **Contract-driven design** is load-bearing. Cleanup rules, footer detection, and validation policy live in the YAML contract — not in script logic. When adapting to a different CSV layout, update the contract. Do not encode layout assumptions into the script.
 
 **String preservation is intentional.** Fidelity formats values like `$1,234.56` and `+5.23%` — coercing these to floats drops signal the LLM needs. Do not add numeric parsing unless it's explicitly behind a flag and off by default.
 
-**Fail-fast on integrity breach.** Validation runs fully in-memory before any file is written. `AssertionError` on breach. Missing-column warnings go to stderr and do not abort — this is intentional for forward compatibility with new Fidelity export layouts.
+**Fail-fast on integrity breach.** Validation runs fully in-memory before any file is written. `AssertionError` on breach. When a contract `drop_rows` or `drop_columns` rule references a column that isn't in the CSV, a warning goes to stderr and the rule is skipped — this is intentional for forward compatibility with new Fidelity export layouts. Required columns (`Account Name`, `Account Number`, `Symbol`, `Current value`) are not subject to this leniency; missing any of them aborts the run.
 
 ---
 
@@ -61,10 +61,10 @@ Single-script ETL pipeline per data source. Each script is paired with a YAML co
 There is no automated test suite. Validate changes manually:
 
 1. Run `--dry-run` against a known-good CSV and confirm no assertion errors
-2. Run normally and inspect the output markdown — verify row count matches source, column names are correct, no values are coerced or truncated
+2. Run normally and inspect the output markdown — verify no holdings are silently lost (drop_rows and footer detection legitimately remove rows, so raw row count won't match source; the `(Symbol, Current value)` invariant is what matters), column names are correct, no values are coerced or truncated
 3. For contract changes, run `--verbose` to trace block-level processing
 
-If you add a test suite, use `pytest` and keep fixtures in `tests/fixtures/`. Do not commit real Fidelity CSVs as fixtures — anonymize or synthesize them.
+A synthetic fixture exists at `tests/fixtures/fidelity_positions_test.csv` but no test code consumes it yet. If you add a test suite, use `pytest` and keep additional fixtures in `tests/fixtures/`. Do not commit real Fidelity CSVs as fixtures — anonymize or synthesize them.
 
 ---
 
