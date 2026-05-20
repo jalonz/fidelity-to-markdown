@@ -22,6 +22,6 @@ Pending work for `fidelity_csv_to_markdown.py`. Items derived from the review se
 
 ## Lower priority / opinion
 
-- [ ] Convert the `convert_csv` result dict to a `@dataclass` for IDE/type support. Pure refactor.
-- [ ] Cosmetic off-by-one in `_bar` when `filled == 0` on the first frame (renders `[> ...]` with no fill). Harmless.
+- [x] Convert the `convert_csv` result dict to a `@dataclass` for IDE/type support. Pure refactor.
+- [x] Cosmetic off-by-one in `_bar` when `filled == 0` on the first frame (renders `[> ...]` with no fill). Harmless.
 - [x] Simplify `drop_cols = cleanup.get("drop_columns", []) or []` to `cleanup.get("drop_columns") or []`.

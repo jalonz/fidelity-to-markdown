@@ -40,6 +40,7 @@ is specified in the contract).
 
 import argparse
 from collections import Counter
+from dataclasses import dataclass
 import re
 import sys
 from pathlib import Path
@@ -74,7 +75,11 @@ def _position_pairs(symbols, values) -> Counter:
 
 def _bar(current: int, total: int, width: int = 28) -> str:
     filled = round(width * current / total) if total else width
-    bar = "=" * (filled - 1) + (">" if filled < width else "=") + " " * (width - filled)
+    if filled == 0:
+        bar = " " * width
+    else:
+        head = "=" if filled >= width else ">"
+        bar = "=" * (filled - 1) + head + " " * (width - filled)
     return f"[{bar}] {current}/{total}"
 
 
@@ -87,10 +92,24 @@ def _size_str(path: Path) -> str:
 # Core conversion
 # ================================
 
-def convert_csv(csv_path: Path, contract: dict, out_dir: Path, dry_run: bool) -> dict:
+@dataclass
+class ConvertResult:
+    out_path: Path
+    account_name: str
+    account_number: str
+    rows: int
+    cols: int
+    positions: int
+    size: str
+    contract_name: str
+    contract_version: str
+    position_pairs: Counter
+    dry_run: bool
+
+
+def convert_csv(csv_path: Path, contract: dict, out_dir: Path, dry_run: bool) -> ConvertResult:
     """
-    Convert one CSV to markdown. Returns a result dict; raises on failure.
-    Does not print anything.
+    Convert one CSV to markdown. Raises on failure. Does not print anything.
     """
     contract_meta = contract.get("contract", {})
     contract_version = contract_meta.get("version", "unknown")
@@ -195,44 +214,44 @@ def convert_csv(csv_path: Path, contract: dict, out_dir: Path, dry_run: bool) ->
     else:
         size = "dry-run"
 
-    return {
-        "out_path": out_path,
-        "account_name": acct_name_raw,
-        "account_number": acct_num_raw,
-        "rows": len(df),
-        "cols": len(df.columns),
-        "positions": len(position_pairs),
-        "size": size,
-        "contract_name": contract_name,
-        "contract_version": contract_version,
-        "position_pairs": position_pairs,
-        "dry_run": dry_run,
-    }
+    return ConvertResult(
+        out_path=out_path,
+        account_name=acct_name_raw,
+        account_number=acct_num_raw,
+        rows=len(df),
+        cols=len(df.columns),
+        positions=len(position_pairs),
+        size=size,
+        contract_name=contract_name,
+        contract_version=contract_version,
+        position_pairs=position_pairs,
+        dry_run=dry_run,
+    )
 
 
 # ================================
 # Output formatting
 # ================================
 
-def print_result_verbose(r: dict) -> None:
-    print(f"=== {r['out_path'].name} ===")
-    print(f"account   {r['account_name']} ({r['account_number']})")
-    print(f"rows      {r['rows']}  cols  {r['cols']}  size  {r['size']}")
-    print(f"contract  {r['contract_name']} v{r['contract_version']}")
-    tag = " [dry-run]" if r["dry_run"] else ""
-    print(f"checks    ✓ columns intact  ✓ {r['positions']} positions  ✓ no losses{tag}")
+def print_result_verbose(r: ConvertResult) -> None:
+    print(f"=== {r.out_path.name} ===")
+    print(f"account   {r.account_name} ({r.account_number})")
+    print(f"rows      {r.rows}  cols  {r.cols}  size  {r.size}")
+    print(f"contract  {r.contract_name} v{r.contract_version}")
+    tag = " [dry-run]" if r.dry_run else ""
+    print(f"checks    ✓ columns intact  ✓ {r.positions} positions  ✓ no losses{tag}")
     print()
-    for (sym, val), count in sorted(r["position_pairs"].items()):
+    for (sym, val), count in sorted(r.position_pairs.items()):
         suffix = f" (x{count})" if count > 1 else ""
         print(f"  {sym:<12} {val}{suffix}")
 
 
-def print_result_quiet(r: dict) -> None:
-    tag = " [dry-run]" if r["dry_run"] else ""
+def print_result_quiet(r: ConvertResult) -> None:
+    tag = " [dry-run]" if r.dry_run else ""
     print(
-        f"✓ {r['out_path'].name}"
-        f"  {r['account_name']} ({r['account_number']})"
-        f"  rows={r['rows']} pos={r['positions']} size={r['size']}{tag}"
+        f"✓ {r.out_path.name}"
+        f"  {r.account_name} ({r.account_number})"
+        f"  rows={r.rows} pos={r.positions} size={r.size}{tag}"
     )
 
 
