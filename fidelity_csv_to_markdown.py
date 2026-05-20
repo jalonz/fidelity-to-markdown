@@ -93,14 +93,13 @@ def convert_csv(csv_path: Path, contract: dict, out_dir: Path, dry_run: bool) ->
     cleanup = contract.get("input_cleanup", {})
 
     df = pd.read_csv(csv_path, dtype=str, index_col=False, encoding="utf-8-sig")
-    original_columns = list(df.columns)
 
     # Apply column aliases before anything else
-    aliases = cleanup.get("column_aliases", {}) or {}
+    aliases = cleanup.get("column_aliases") or {}
     if aliases:
-        df = df.rename(columns={k: v for k, v in aliases.items() if k in df.columns})
+        df = df.rename(columns=aliases)
 
-    aliased_columns = [aliases.get(c, c) for c in original_columns]
+    aliased_columns = list(df.columns)
 
     # Baseline position pairs for loss detection
     raw_position_pairs: Counter = Counter()
@@ -143,12 +142,19 @@ def convert_csv(csv_path: Path, contract: dict, out_dir: Path, dry_run: bool) ->
     if missing:
         raise AssertionError(f"FAIL columns unexpectedly dropped: {missing}")
 
-    for col in ("Account Name", "Account Number"):
+    for col in ("Account Name", "Account Number", "Symbol", "Current value"):
         if col not in df.columns:
-            raise KeyError(f"FAIL required column missing: '{col}'")
+            raise AssertionError(f"FAIL required column missing: '{col}'")
 
     if len(df) == 0:
         raise AssertionError("FAIL no rows after cleanup — check drop rules and footer markers")
+
+    if df["Account Number"].nunique() != 1:
+        accounts = sorted(df["Account Number"].dropna().unique().tolist())
+        raise AssertionError(
+            f"FAIL multi-account CSV detected ({len(accounts)} accounts): {accounts}. "
+            "Export one account per CSV."
+        )
 
     acct_name_raw = norm_str(df["Account Name"].iloc[0])
     acct_num_raw = norm_str(df["Account Number"].iloc[0])
@@ -157,10 +163,6 @@ def convert_csv(csv_path: Path, contract: dict, out_dir: Path, dry_run: bool) ->
         raise AssertionError("FAIL Account Name is empty after cleanup")
     if not acct_num_raw:
         raise AssertionError("FAIL Account Number is empty after cleanup")
-
-    for col in ("Symbol", "Current value"):
-        if col not in df.columns:
-            raise KeyError(f"FAIL required column missing: '{col}'")
 
     position_pairs = Counter(
         (norm_str(sym), norm_str(val))
@@ -179,6 +181,12 @@ def convert_csv(csv_path: Path, contract: dict, out_dir: Path, dry_run: bool) ->
     acct_name = normalize_account_name(acct_name_raw)
     acct_num = normalize_account_number(acct_num_raw)
     out_path = out_dir / f"{acct_name}__{acct_num}.md"
+
+    if out_path.exists():
+        raise AssertionError(
+            f"FAIL output collision: {out_path} already exists. "
+            "Two inputs may normalize to the same name, or remove the existing file."
+        )
 
     markdown = df.to_markdown(index=False)
     if not markdown:
