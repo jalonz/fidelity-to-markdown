@@ -152,6 +152,17 @@ To adapt the pipeline to a different CSV layout or add cleanup rules, update the
 
 ---
 
+## Tests
+
+Pytest suite under `tests/` covers `convert_csv()` and CLI behavior.
+
+```bash
+pip install -r requirements-dev.txt
+pytest
+```
+
+---
+
 ## Privacy Note
 
 Fidelity exports contain account numbers and position details. Do not commit CSV exports or generated markdown to version control. Both `*.csv` and `*.md` output files are gitignored by default (README.md and CLAUDE.md are excluded from that rule).

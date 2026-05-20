@@ -6,7 +6,7 @@ Pending work for `fidelity_csv_to_markdown.py`. Items derived from the review se
 
 - [x] **Bump script version + changelog** (`fidelity_csv_to_markdown.py:5-32`). Header still reads `Version: 2.1.0`. Add a `v2.2.0` entry covering: multi-account guard, output-collision check, mutex `--verbose` / `--quiet`, reformatted argparse error output, `_position_pairs` helper, `ConvertResult` dataclass, and the `_bar` empty-frame fix.
 - [x] **README sync**. README documents flags but not the new abort behavior. Add a short note about multi-account rejection and the output-collision check so users aren't surprised by `AssertionError` on inputs that previously "worked".
-- [ ] **Automated test suite**. `tests/fixtures/fidelity_positions_test.csv` exists; nothing consumes it. Pytest covering the happy path plus the new asserts (multi-account, collision, missing required column, empty post-cleanup, positions-lost detection) would lock the validation surface in.
+- [x] **Automated test suite**. `tests/fixtures/fidelity_positions_test.csv` exists; nothing consumes it. Pytest covering the happy path plus the new asserts (multi-account, collision, missing required column, empty post-cleanup, positions-lost detection) would lock the validation surface in.
 - [ ] **CI**. Once a test suite exists, add a GitHub Actions workflow running `pytest` on push and PR.
 
 ## Maybe later

@@ -58,13 +58,16 @@ Single-script ETL pipeline per data source. Each script is paired with a YAML co
 
 ## Validation workflow
 
-There is no automated test suite. Validate changes manually:
+Automated test suite under `tests/` covers `convert_csv()` directly plus CLI behavior via subprocess. Install dev deps and run:
 
-1. Run `--dry-run` against a known-good CSV and confirm no assertion errors
-2. Run normally and inspect the output markdown — verify no holdings are silently lost (drop_rows and footer detection legitimately remove rows, so raw row count won't match source; the `(Symbol, Current value)` invariant is what matters), column names are correct, no values are coerced or truncated
-3. For contract changes, run `--verbose` to trace block-level processing
+```bash
+pip install -r requirements-dev.txt
+pytest
+```
 
-A synthetic fixture exists at `tests/fixtures/fidelity_positions_test.csv` but no test code consumes it yet. If you add a test suite, use `pytest` and keep additional fixtures in `tests/fixtures/`. Do not commit real Fidelity CSVs as fixtures — anonymize or synthesize them.
+The suite exercises the happy path, every validation assert (multi-account, output collision, missing required columns, empty post-cleanup, positions lost during cleanup), and CLI ergonomics (mutex `--verbose`/`--quiet`, structured error output, case-insensitive `--csvdir` glob). Fixture lives at `tests/fixtures/fidelity_positions_test.csv`; add more fixtures alongside as needed. Do not commit real Fidelity CSVs as fixtures — anonymize or synthesize them.
+
+For manual spot-checking after a contract change, `--verbose` traces block-level processing.
 
 ---
 

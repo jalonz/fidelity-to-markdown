@@ -165,9 +165,11 @@ def convert_csv(csv_path: Path, contract: dict, out_dir: Path, dry_run: bool) ->
         else:
             print(f"WARNING: drop_columns entry '{col}' not in CSV — skipped", file=sys.stderr)
 
-    # Footer/disclaimer removal
+    # Footer/disclaimer removal (skip on empty df: agg+axis=1 on zero rows
+    # returns a DataFrame instead of a Series in pandas 3.x and crashes the
+    # .str accessor)
     markers = cleanup.get("footer_detection_policy", {}).get("prefer_disclaimer_markers", [])
-    if markers:
+    if markers and not df.empty:
         markers_lc = [m.lower() for m in markers if isinstance(m, str) and m.strip()]
         if markers_lc:
             row_text = df.fillna("").agg(" | ".join, axis=1).str.lower()
