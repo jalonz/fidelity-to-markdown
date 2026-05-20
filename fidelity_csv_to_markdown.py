@@ -67,6 +67,11 @@ def norm_str(val: object) -> str:
     return "" if pd.isna(val) else str(val).strip()
 
 
+def _position_pairs(symbols, values) -> Counter:
+    pairs = [(norm_str(s), norm_str(v)) for s, v in zip(symbols, values)]
+    return Counter(p for p in pairs if any(p))
+
+
 def _bar(current: int, total: int, width: int = 28) -> str:
     filled = round(width * current / total) if total else width
     bar = "=" * (filled - 1) + (">" if filled < width else "=") + " " * (width - filled)
@@ -104,11 +109,7 @@ def convert_csv(csv_path: Path, contract: dict, out_dir: Path, dry_run: bool) ->
     # Baseline position pairs for loss detection
     raw_position_pairs: Counter = Counter()
     if "Symbol" in df.columns and "Current value" in df.columns:
-        raw_position_pairs = Counter(
-            (norm_str(sym), norm_str(val))
-            for sym, val in zip(df["Symbol"], df["Current value"])
-            if norm_str(sym) or norm_str(val)
-        )
+        raw_position_pairs = _position_pairs(df["Symbol"], df["Current value"])
 
     # Drop rows per contract
     for rule in cleanup.get("drop_rows", []):
@@ -164,11 +165,7 @@ def convert_csv(csv_path: Path, contract: dict, out_dir: Path, dry_run: bool) ->
     if not acct_num_raw:
         raise AssertionError("FAIL Account Number is empty after cleanup")
 
-    position_pairs = Counter(
-        (norm_str(sym), norm_str(val))
-        for sym, val in zip(df["Symbol"], df["Current value"])
-        if norm_str(sym) or norm_str(val)
-    )
+    position_pairs = _position_pairs(df["Symbol"], df["Current value"])
     if not position_pairs:
         raise AssertionError("FAIL no valid symbol/value pairs after cleanup")
 
@@ -243,8 +240,19 @@ def print_result_quiet(r: dict) -> None:
 # Main
 # ================================
 
+class _FormattedArgumentParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        prog = self.prog
+        sys.stderr.write(f"\nERROR: {message}\n\n")
+        sys.stderr.write("Usage:\n")
+        sys.stderr.write(f"  {prog} --csv FILE --contract YAML [options]\n")
+        sys.stderr.write(f"  {prog} --csvdir DIR --contract YAML [options]\n\n")
+        sys.stderr.write(f"Run '{prog} --help' for the full option list.\n")
+        sys.exit(2)
+
+
 def main():
-    parser = argparse.ArgumentParser(
+    parser = _FormattedArgumentParser(
         description="Convert Fidelity positions CSV(s) to Markdown"
     )
     source = parser.add_mutually_exclusive_group(required=True)
