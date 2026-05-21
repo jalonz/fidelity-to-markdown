@@ -1,10 +1,16 @@
 contract:
   name: fidelity_positions_single_account_csv_to_markdown
-  version: 2.0.0
-  previous_version: 1.0.0
-  effective_date: '2026-04-18'
+  version: 2.1.0
+  previous_version: 2.0.0
+  effective_date: '2026-05-21'
   description: Fidelity positions CSV (single account) → markdown table with all columns preserved and strict validation.
 changelog:
+- version: 2.1.0
+  date: '2026-05-21'
+  changes:
+  - Add output.markdown.summary_header to emit an "As of:" line and column totals
+    above the table. Aggregation is plain pass-through (sum of one column);
+    see CLAUDE.md "Carve-out for plain aggregation".
 - version: 2.0.0
   date: '2026-04-18'
   changes:
@@ -39,6 +45,18 @@ output:
     preserve_column_order: true
     preserve_string_values: true
     purpose: llm_analysis
+    summary_header:
+      enabled: true
+      as_of:
+        # Case-insensitive search across all cells (pre-cleanup). The captured
+        # group is emitted verbatim as the "As of:" value. Missing is non-fatal.
+        pattern: 'Date downloaded\s+(.+)'
+      totals:
+        # Plain sum of one column, formatted as USD currency. Each entry adds
+        # one "<label>: $X,XXX.XX" line above the table. Unparseable cells
+        # (--, blank) are skipped. Missing column is non-fatal.
+        - label: Total Current Value
+          column: Current value
     filename_policy:
       pattern: '{account_name}__{account_number}.md'
       fields:

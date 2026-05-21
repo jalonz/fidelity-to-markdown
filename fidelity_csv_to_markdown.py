@@ -2,10 +2,18 @@
 """
 fidelity_csv_to_markdown
 
-Version: 2.2.0
-Date: 2026-05-20
+Version: 2.3.0
+Date: 2026-05-21
 
 Changelog:
+- v2.3.0 (2026-05-21)
+  - Emit a contract-driven summary header above the markdown table: an
+    "**As of:** <timestamp>" line extracted from the Fidelity "Date downloaded"
+    footer, plus one "**<label>:** $X,XXX.XX" line per configured total
+    (default: Total Current Value). Driven by output.markdown.summary_header
+    in the YAML contract; set enabled: false to suppress. Summing one column
+    verbatim is treated as formatting under CLAUDE.md's aggregation carve-out.
+  - ConvertResult gains as_of and totals fields; --verbose prints both.
 - v2.2.0 (2026-05-20)
   - Reject multi-account CSVs: abort with a clear error if a single CSV
     contains positions for more than one Account Number (previously mis-labeled
@@ -106,6 +114,44 @@ def _size_str(path: Path) -> str:
     return f"{size / 1024:.1f}KB" if size >= 1024 else f"{size}B"
 
 
+def _parse_currency(val: object) -> float | None:
+    """Parse strings like '$1,234.56', '-$1,234.56', '($1,234.56)' to float. Returns None if unparseable or sentinel."""
+    s = norm_str(val)
+    if not s or s == "--":
+        return None
+    negative = False
+    if s.startswith("(") and s.endswith(")"):
+        s = s[1:-1]
+        negative = True
+    s = s.replace("$", "").replace(",", "").strip()
+    try:
+        v = float(s)
+    except ValueError:
+        return None
+    return -v if negative else v
+
+
+def _format_usd(amount: float) -> str:
+    if amount < 0:
+        return f"-${-amount:,.2f}"
+    return f"${amount:,.2f}"
+
+
+def _extract_as_of(df: pd.DataFrame, pattern: str) -> str | None:
+    """Search every cell for the regex; return the first capture group's match."""
+    try:
+        compiled = re.compile(pattern, re.IGNORECASE)
+    except re.error:
+        return None
+    for col in df.columns:
+        series = df[col].dropna().astype(str)
+        for val in series:
+            m = compiled.search(val)
+            if m:
+                return (m.group(1) if m.groups() else m.group(0)).strip()
+    return None
+
+
 # ================================
 # Core conversion
 # ================================
@@ -123,6 +169,8 @@ class ConvertResult:
     contract_version: str
     position_pairs: Counter
     dry_run: bool
+    as_of: str | None
+    totals: list[tuple[str, str]]
 
 
 def convert_csv(csv_path: Path, contract: dict, out_dir: Path, dry_run: bool) -> ConvertResult:
@@ -147,6 +195,16 @@ def convert_csv(csv_path: Path, contract: dict, out_dir: Path, dry_run: bool) ->
     raw_position_pairs: Counter = Counter()
     if "Symbol" in df.columns and "Current value" in df.columns:
         raw_position_pairs = _position_pairs(df["Symbol"], df["Current value"])
+
+    # Extract "As of" timestamp BEFORE drop_rows strips it. The Fidelity
+    # "Date downloaded ..." footer is otherwise lost to cleanup.
+    summary_cfg = contract.get("output", {}).get("markdown", {}).get("summary_header", {}) or {}
+    summary_enabled = bool(summary_cfg.get("enabled", False))
+    as_of: str | None = None
+    if summary_enabled:
+        as_of_pattern = (summary_cfg.get("as_of") or {}).get("pattern")
+        if as_of_pattern:
+            as_of = _extract_as_of(df, as_of_pattern)
 
     # Drop rows per contract
     for rule in cleanup.get("drop_rows", []):
@@ -224,9 +282,32 @@ def convert_csv(csv_path: Path, contract: dict, out_dir: Path, dry_run: bool) ->
             "Two inputs may normalize to the same name, or remove the existing file."
         )
 
-    markdown = df.to_markdown(index=False)
-    if not markdown:
+    # Plain column sums per contract (no derived ratios — see CLAUDE.md carve-out)
+    totals: list[tuple[str, str]] = []
+    if summary_enabled:
+        for entry in summary_cfg.get("totals") or []:
+            label = entry.get("label")
+            col = entry.get("column")
+            if not label or not col:
+                continue
+            if col not in df.columns:
+                print(f"WARNING: summary_header totals column '{col}' not in CSV — skipped", file=sys.stderr)
+                continue
+            parsed_values = [v for v in (_parse_currency(x) for x in df[col]) if v is not None]
+            if not parsed_values:
+                continue
+            totals.append((label, _format_usd(sum(parsed_values))))
+
+    header_lines: list[str] = []
+    if as_of:
+        header_lines.append(f"**As of:** {as_of}")
+    for label, value in totals:
+        header_lines.append(f"**{label}:** {value}")
+
+    table = df.to_markdown(index=False)
+    if not table:
         raise AssertionError("FAIL markdown serialization produced no output")
+    markdown = "\n".join(header_lines) + "\n\n" + table if header_lines else table
 
     if not dry_run:
         out_path.write_text(markdown, encoding="utf-8")
@@ -246,6 +327,8 @@ def convert_csv(csv_path: Path, contract: dict, out_dir: Path, dry_run: bool) ->
         contract_version=contract_version,
         position_pairs=position_pairs,
         dry_run=dry_run,
+        as_of=as_of,
+        totals=totals,
     )
 
 
@@ -258,6 +341,10 @@ def print_result_verbose(r: ConvertResult) -> None:
     print(f"account   {r.account_name} ({r.account_number})")
     print(f"rows      {r.rows}  cols  {r.cols}  size  {r.size}")
     print(f"contract  {r.contract_name} v{r.contract_version}")
+    if r.as_of:
+        print(f"as of     {r.as_of}")
+    for label, value in r.totals:
+        print(f"{label.lower()}  {value}")
     tag = " [dry-run]" if r.dry_run else ""
     print(f"checks    ✓ columns intact  ✓ {r.positions} positions  ✓ no losses{tag}")
     print()

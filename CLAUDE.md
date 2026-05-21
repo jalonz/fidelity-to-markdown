@@ -75,7 +75,9 @@ For manual spot-checking after a contract change, `--verbose` traces block-level
 
 **Dependencies:** Keep the dependency surface minimal. Current deps are `pandas`, `tabulate`, `PyYAML`. Do not add heavy dependencies (no `pyarrow`, no `polars`, no `sqlalchemy`) without a strong reason. If you need to add a dep, add it to `requirements.txt` and note why in the PR.
 
-**Scope:** This tool transforms and formats — it does not analyze, score, or annotate. Analysis is the LLM's job. Do not add logic that interprets portfolio data (e.g., flagging drift, computing allocations). Keep the pipeline dumb and the output faithful.
+**Scope:** This tool transforms and formats — it does not analyze, score, or annotate. Analysis is the LLM's job. Do not add logic that interprets portfolio data (e.g., flagging drift, computing allocations against targets, recommending rebalances, scoring holdings). Keep the pipeline dumb and the output faithful.
+
+*Carve-out for plain aggregation and metadata pass-through.* Summing a single existing column verbatim (e.g., totaling `Current value` for an account balance line) counts as formatting, not analysis — the LLM could do it by hand from the table, the script just saves it the trip. Preserving metadata Fidelity already emits (e.g., the `Date downloaded` timestamp as an `As of:` header) is faithful pass-through. The line: no ratios, no derived percentages, no comparisons against external targets or benchmarks, no judgments. If it isn't a sum of one column or a value Fidelity already wrote, it belongs to the LLM. Any such aggregation must be contract-driven (configured in YAML), not hardcoded.
 
 **New scripts:** If adding a new ETL script for a different data source or output format, create a new script and a new contract. Do not extend `fidelity_csv_to_markdown.py` to handle unrelated sources.
 

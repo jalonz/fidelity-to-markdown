@@ -15,6 +15,8 @@ Converts Fidelity "Positions" CSV exports into markdown format. Supports single-
 > **One account per CSV.** The script rejects multi-account exports with a clear error listing the distinct account numbers found. Export each account separately from Fidelity (do not use "All Accounts").
 >
 > **No silent overwrites.** If `{account_name}__{account_number}.md` already exists in the output directory, the script aborts rather than overwriting it. Remove or move the existing file to rerun.
+>
+> **Summary header above the table.** Each output file begins with an `**As of:**` line (extracted from the Fidelity `Date downloaded` footer) and a `**Total Current Value:**` line (sum of the `Current value` column). Configured under `output.markdown.summary_header` in the YAML contract; set `enabled: false` to suppress.
 
 ---
 
@@ -147,6 +149,12 @@ Key contract knobs under `input_cleanup`:
 - `drop_columns` — remove columns from the output entirely.
 - `drop_rows` — regex-match rows to drop (e.g. `Date downloaded` summary rows).
 - `footer_detection_policy.prefer_disclaimer_markers` — case-insensitive substrings that mark disclaimer/footer rows for removal.
+
+And under `output.markdown`:
+
+- `summary_header.enabled` — emit an `As of:` line plus column totals above the table.
+- `summary_header.as_of.pattern` — regex (case-insensitive) searched across every cell *before* `drop_rows` runs; the first capture group is emitted verbatim.
+- `summary_header.totals` — list of `{label, column}` entries. Each entry adds one `**label:** $X,XXX.XX` line above the table, summing the named column. Unparseable cells (`--`, blank) are skipped; a missing column logs a warning and skips that line. This is a plain pass-through aggregation; see CLAUDE.md "Carve-out for plain aggregation" for the policy boundary.
 
 To adapt the pipeline to a different CSV layout or add cleanup rules, update the contract — the script logic should not need to change.
 
