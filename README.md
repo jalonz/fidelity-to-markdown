@@ -16,7 +16,7 @@ Converts Fidelity "Positions" CSV exports into markdown format. Supports single-
 >
 > **No silent overwrites.** If `{account_name}__{account_number}.md` already exists in the output directory, the script aborts rather than overwriting it. Remove or move the existing file to rerun.
 >
-> **Summary header above the table.** Each output file begins with an `**As of:**` line (extracted from the Fidelity `Date downloaded` footer) and a `**Total Current Value:**` line (sum of the `Current value` column). Configured under `output.markdown.summary_header` in the YAML contract; set `enabled: false` to suppress.
+> **Summary header above the table.** Each output file begins with an `**As of:**` line (extracted from the Fidelity `Date downloaded` footer) and a `**Total Current Value:**` line (sum of the `Current value` column from the export — not a Fidelity-quoted account balance). Configured under `output.markdown.summary_header` in the YAML contract; set `enabled: false` to suppress.
 
 ---
 
