@@ -9,6 +9,7 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = REPO_ROOT / "fidelity_csv_to_markdown.py"
 FIXTURE_CSV = REPO_ROOT / "tests" / "fixtures" / "fidelity_positions_test.csv"
+MULTI_FIXTURE_CSV = REPO_ROOT / "tests" / "fixtures" / "fidelity_positions_multi_account_test.csv"
 CONTRACT = REPO_ROOT / "fidelity_csv_to_markdown.yaml"
 
 
@@ -56,7 +57,8 @@ def test_happy_path_dry_run_exits_zero(tmp_path):
         "--dry-run",
     )
     assert proc.returncode == 0, proc.stderr
-    assert "individual_-_tod__x10000001.md" in proc.stdout
+    # Output filename now derives from the input CSV stem.
+    assert "fidelity_positions_test.md" in proc.stdout
 
 
 def test_case_insensitive_csvdir_glob(tmp_path):
@@ -71,4 +73,40 @@ def test_case_insensitive_csvdir_glob(tmp_path):
         "--dry-run",
     )
     assert proc.returncode == 0, proc.stderr
-    assert "individual_-_tod__x10000001.md" in proc.stdout
+    # Stem-based output name preserves the input file's case ("Positions.CSV").
+    assert "Positions.md" in proc.stdout
+
+
+def test_malformed_contract_aborts(tmp_path):
+    # A contract with a typo'd key must abort loudly, not silently default.
+    bad_contract = tmp_path / "bad.yaml"
+    bad_contract.write_text(
+        "contract:\n"
+        "  name: bad\n"
+        "  version: 1.0.0\n"
+        "output:\n"
+        "  markdown:\n"
+        "    summary_header:\n"
+        "      enabld: true\n",  # typo of "enabled"
+        encoding="utf-8",
+    )
+    proc = run_cli("--csv", str(FIXTURE_CSV), "--contract", str(bad_contract), "--dry-run")
+    assert proc.returncode == 1
+    assert "malformed contract" in proc.stderr
+    assert "unknown key 'enabld'" in proc.stderr
+
+
+def test_multi_account_cli_end_to_end(tmp_path):
+    proc = run_cli(
+        "--csv", str(MULTI_FIXTURE_CSV),
+        "--contract", str(CONTRACT),
+        "--outdir", str(tmp_path),
+    )
+    assert proc.returncode == 0, proc.stderr
+    out = tmp_path / "fidelity_positions_multi_account_test.md"
+    assert out.exists()
+    body = out.read_text(encoding="utf-8")
+    assert "## Brokerage - TOD (ACCT-AAA)" in body
+    assert "## Rollover IRA (ACCT-BBB)" in body
+    assert "## 401(k) Plan (ACCT-CCC)" in body
+    assert "**Total Current Value:** $115,000.00" in body

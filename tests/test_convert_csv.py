@@ -1,16 +1,19 @@
 import pandas as pd
 import pytest
 
-from fidelity_csv_to_markdown import ConvertResult, convert_csv
+from fidelity_csv_to_markdown import AccountSection, ConvertResult, convert_csv
 
 
 def test_happy_path_dry_run(fixture_csv_path, contract, tmp_path):
     result = convert_csv(fixture_csv_path, contract, tmp_path, dry_run=True)
 
     assert isinstance(result, ConvertResult)
-    assert result.account_name == "Individual - TOD"
-    assert result.account_number == "X10000001"
-    assert result.positions == 5
+    assert len(result.accounts) == 1
+    section = result.accounts[0]
+    assert isinstance(section, AccountSection)
+    assert section.account_name == "Individual - TOD"
+    assert section.account_number == "X10000001"
+    assert section.positions == 5
     assert result.dry_run is True
     assert result.size == "dry-run"
     assert not result.out_path.exists()
@@ -20,12 +23,14 @@ def test_happy_path_writes_file(fixture_csv_path, contract, tmp_path):
     result = convert_csv(fixture_csv_path, contract, tmp_path, dry_run=False)
 
     assert result.out_path.exists()
-    assert result.out_path.name == "individual_-_tod__x10000001.md"
+    # Filename now derives from the input CSV stem (not account_name__number).
+    assert result.out_path.name == "fidelity_positions_test.md"
     body = result.out_path.read_text(encoding="utf-8")
     assert "X10000001" in body
     assert "VTI" in body
     assert "AAPL" in body
-    # Header lines precede the table; the table itself still starts with "|".
+    # One account → one section under an H2 heading.
+    assert "## Individual - TOD (X10000001)" in body
     lines = body.splitlines()
     assert any(line.startswith("|") for line in lines)
 
@@ -38,19 +43,19 @@ def test_summary_header_emitted(fixture_csv_path, contract, tmp_path):
     assert "**As of:** Apr-03-2026 12:01 p.m ET" in body
     # Sum of Current value across the fixture's 6 rows = $100,000.00
     assert "**Total Current Value:** $100,000.00" in body
-    # Header appears above the table
-    header_idx = body.index("**As of:**")
-    table_idx = body.index("|")
-    assert header_idx < table_idx
+    # Account index (single account → its subtotal == the portfolio total).
+    assert "- Individual - TOD (X10000001): $100,000.00" in body
+    # Portfolio header appears above the first section heading.
+    assert body.index("**As of:**") < body.index("## Individual - TOD")
 
 
 def test_convert_result_exposes_as_of_and_totals(fixture_csv_path, contract, tmp_path):
     result = convert_csv(fixture_csv_path, contract, tmp_path, dry_run=True)
     assert result.as_of == "Apr-03-2026 12:01 p.m ET"
-    assert result.totals == [("Total Current Value", "$100,000.00")]
+    assert result.portfolio_totals == [("Total Current Value", "$100,000.00")]
 
 
-def test_summary_header_disabled(fixture_csv_path, contract, tmp_path):
+def test_headers_disabled(fixture_csv_path, contract, tmp_path):
     disabled = {
         **contract,
         "output": {
@@ -58,6 +63,7 @@ def test_summary_header_disabled(fixture_csv_path, contract, tmp_path):
             "markdown": {
                 **contract.get("output", {}).get("markdown", {}),
                 "summary_header": {"enabled": False},
+                "section_header": {"enabled": False},
             },
         },
     }
@@ -66,9 +72,10 @@ def test_summary_header_disabled(fixture_csv_path, contract, tmp_path):
 
     assert "**As of:**" not in body
     assert "**Total Current Value:**" not in body
-    assert body.startswith("|")
+    # Sections are always present, so the file opens with the H2 heading.
+    assert body.startswith("## Individual - TOD (X10000001)")
     assert result.as_of is None
-    assert result.totals == []
+    assert result.portfolio_totals == []
 
 
 def test_summary_header_missing_totals_column_skipped(fixture_csv_path, contract, tmp_path):
@@ -87,9 +94,9 @@ def test_summary_header_missing_totals_column_skipped(fixture_csv_path, contract
         },
     }
     result = convert_csv(fixture_csv_path, bogus, tmp_path, dry_run=True)
-    # As-of still extracted; bogus total skipped, no totals line emitted.
+    # As-of still extracted; bogus portfolio total skipped, none emitted.
     assert result.as_of == "Apr-03-2026 12:01 p.m ET"
-    assert result.totals == []
+    assert result.portfolio_totals == []
 
 
 def test_vti_appears_twice_in_position_pairs(fixture_csv_path, contract, tmp_path):
@@ -100,16 +107,59 @@ def test_vti_appears_twice_in_position_pairs(fixture_csv_path, contract, tmp_pat
     assert vti_count == 2
 
 
-def test_multi_account_rejected(fixture_df, contract, write_csv, tmp_path):
-    clone = fixture_df.iloc[[0]].copy()
-    clone["Account Number"] = "X20000002"
-    clone["Account Name"] = "Other Account"
-    multi = pd.concat([fixture_df, clone], ignore_index=True)
-    csv = write_csv(multi, "multi.csv")
+# ---- Multi-account ----
 
-    with pytest.raises(AssertionError, match="multi-account CSV detected"):
+def test_multi_account_sections_emitted(multi_fixture_csv_path, contract, tmp_path):
+    result = convert_csv(multi_fixture_csv_path, contract, tmp_path, dry_run=False)
+    body = result.out_path.read_text(encoding="utf-8")
+
+    assert len(result.accounts) == 3
+    assert "## Brokerage - TOD (ACCT-AAA)" in body
+    assert "## Rollover IRA (ACCT-BBB)" in body
+    assert "## 401(k) Plan (ACCT-CCC)" in body
+    # Portfolio total sums Current value across all three accounts.
+    assert "**Total Current Value:** $115,000.00" in body
+    # First-seen account order is preserved (index lists AAA, then BBB, then CCC).
+    assert body.index("ACCT-AAA") < body.index("ACCT-BBB") < body.index("ACCT-CCC")
+
+
+def test_per_account_subtotals(multi_fixture_csv_path, contract, tmp_path):
+    result = convert_csv(multi_fixture_csv_path, contract, tmp_path, dry_run=True)
+    totals = {s.account_number: dict(s.totals) for s in result.accounts}
+    assert totals["ACCT-AAA"]["Total Current Value"] == "$40,000.00"
+    assert totals["ACCT-BBB"]["Total Current Value"] == "$50,000.00"
+    assert totals["ACCT-CCC"]["Total Current Value"] == "$25,000.00"
+
+
+def test_account_index_lists_all_accounts(multi_fixture_csv_path, contract, tmp_path):
+    result = convert_csv(multi_fixture_csv_path, contract, tmp_path, dry_run=False)
+    body = result.out_path.read_text(encoding="utf-8")
+    assert "**Accounts:**" in body
+    assert "- Brokerage - TOD (ACCT-AAA): $40,000.00" in body
+    assert "- Rollover IRA (ACCT-BBB): $50,000.00" in body
+    assert "- 401(k) Plan (ACCT-CCC): $25,000.00" in body
+
+
+def test_one_bad_account_aborts(multi_fixture_df, contract, write_csv, tmp_path):
+    df = multi_fixture_df.copy()
+    # Blank the Account Name on the BBB account only — fail-fast aborts the file.
+    df.loc[df["Account Number"] == "ACCT-BBB", "Account Name"] = ""
+    csv = write_csv(df, "bad_account.csv")
+
+    with pytest.raises(AssertionError, match="Account Name is empty for account ACCT-BBB"):
         convert_csv(csv, contract, tmp_path, dry_run=True)
 
+
+def test_empty_symbol_account_tolerated(multi_fixture_csv_path, contract, tmp_path):
+    result = convert_csv(multi_fixture_csv_path, contract, tmp_path, dry_run=False)
+    body = result.out_path.read_text(encoding="utf-8")
+    ccc = next(s for s in result.accounts if s.account_number == "ACCT-CCC")
+    # The 401(k)-style holding has an empty Symbol but a Current value — it counts.
+    assert ccc.positions == 1
+    assert "TARGET DATE 2040 FUND" in body
+
+
+# ---- Validation (global checks) ----
 
 def test_collision_rejected(fixture_csv_path, contract, tmp_path):
     convert_csv(fixture_csv_path, contract, tmp_path, dry_run=False)
@@ -167,7 +217,7 @@ def test_column_aliases_applied(fixture_df, contract, write_csv, tmp_path):
     }
 
     result = convert_csv(csv, aliased_contract, tmp_path, dry_run=True)
-    assert result.positions == 5
+    assert result.accounts[0].positions == 5
 
 
 def test_drop_columns_removes_columns(fixture_csv_path, contract, tmp_path):

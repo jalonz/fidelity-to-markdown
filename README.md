@@ -10,13 +10,13 @@ The intended workflow: export your account positions from Fidelity → run the s
 
 ### `fidelity_csv_to_markdown.py`
 
-Converts Fidelity "Positions" CSV exports into markdown format. Supports single-file and batch (directory) mode. Each output file is named `{account_name}__{account_number}.md`.
+Converts Fidelity "Positions" CSV exports into markdown format. Supports single-file and batch (directory) mode. Each input CSV produces one output file named after the input stem (e.g. `Portfolio_Positions_Jun-06-2026.md`).
 
-> **One account per CSV.** The script rejects multi-account exports with a clear error listing the distinct account numbers found. Export each account separately from Fidelity (do not use "All Accounts").
+> **Multi-account aware.** The CSV is grouped by `Account Number` and rendered as one file with a `## {Account Name} ({Account Number})` section per account. Feed an "All Accounts" Fidelity export directly — a single-account export is simply the one-section case. (Sections, not a flat table, because `% of account` is per-account in the source.)
 >
-> **No silent overwrites.** If `{account_name}__{account_number}.md` already exists in the output directory, the script aborts rather than overwriting it. Remove or move the existing file to rerun.
+> **No silent overwrites.** If the stem-named output file already exists in the output directory, the script aborts rather than overwriting it. Remove or move the existing file to rerun.
 >
-> **Summary header above the table.** Each output file begins with an `**As of:**` line (extracted from the Fidelity `Date downloaded` footer) and a `**Total Current Value:**` line (sum of the `Current value` column from the export — not a Fidelity-quoted account balance). Configured under `output.markdown.summary_header` in the YAML contract; set `enabled: false` to suppress.
+> **Portfolio header above the sections.** Each file opens with an `**As of:**` line (extracted from the Fidelity `Date downloaded` footer), a portfolio `**Total Current Value:**` line (sum of the `Current value` column across all accounts — not a Fidelity-quoted balance), and an account index listing each account with its subtotal. Each section then carries its own subtotal. All totals are plain single-column sums (no ratios or percentages-of-portfolio). Configured under `output.markdown.summary_header` / `section_header` / `sections` in the YAML contract; set `enabled: false` on a header block to suppress it.
 
 ---
 
@@ -152,11 +152,15 @@ Key contract knobs under `input_cleanup`:
 
 And under `output.markdown`:
 
-- `summary_header.enabled` — emit an `As of:` line plus column totals above the table.
-- `summary_header.as_of.pattern` — regex (case-insensitive) searched across every cell *before* `drop_rows` runs; the first capture group is emitted verbatim.
-- `summary_header.totals` — list of `{label, column}` entries. Each entry adds one `**label:** $X,XXX.XX` line above the table, summing the named column. Unparseable cells (`--`, blank) are skipped; a missing column logs a warning and skips that line. This is a plain pass-through aggregation; see CLAUDE.md "Carve-out for plain aggregation" for the policy boundary.
+- `sections.group_by` — column the file is split on (default `Account Number`); `sections.heading_template` — each section's H2 heading, built from that account's first row (e.g. `{Account Name} ({Account Number})`). Account order is first-seen (no sorting).
+- `summary_header` — the **portfolio** header at the top of the file. `.enabled` toggles it; `.as_of.pattern` is a case-insensitive regex searched across every cell *before* `drop_rows` runs (first capture group emitted verbatim); `.totals` is a list of `{label, column}` entries each summing the named column across **all** accounts; `.account_index` (`enabled`, `label`, `total_column`) lists each account with its own subtotal.
+- `section_header` — the **per-account** subtotal printed under each section heading. Same `{label, column}` totals, scoped to that account.
+
+Unparseable cells (`--`, blank) are skipped in any sum; a missing column logs a warning and skips that line. All totals are plain pass-through aggregations; see CLAUDE.md "Carve-out for plain aggregation" for the policy boundary.
 
 To adapt the pipeline to a different CSV layout or add cleanup rules, update the contract — the script logic should not need to change.
+
+The contract is schema-checked when it loads: unknown keys, wrong types, and uncompilable regexes in the behavior-bearing blocks abort the run with a list of problems, so a typo (e.g. `heading-template` for `heading_template`) fails loudly instead of silently falling back to a default.
 
 ---
 

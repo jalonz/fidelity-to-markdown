@@ -7,6 +7,7 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 FIXTURE_CSV = REPO_ROOT / "tests" / "fixtures" / "fidelity_positions_test.csv"
+MULTI_FIXTURE_CSV = REPO_ROOT / "tests" / "fixtures" / "fidelity_positions_multi_account_test.csv"
 CONTRACT_PATH = REPO_ROOT / "fidelity_csv_to_markdown.yaml"
 
 
@@ -19,6 +20,16 @@ def contract() -> dict:
 @pytest.fixture
 def fixture_csv_path() -> Path:
     return FIXTURE_CSV
+
+
+@pytest.fixture
+def multi_fixture_csv_path() -> Path:
+    return MULTI_FIXTURE_CSV
+
+
+@pytest.fixture
+def multi_fixture_df() -> pd.DataFrame:
+    return pd.read_csv(MULTI_FIXTURE_CSV, dtype=str, index_col=False, encoding="utf-8-sig")
 
 
 @pytest.fixture

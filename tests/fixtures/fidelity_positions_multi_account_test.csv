@@ -1,0 +1,7 @@
+Account Number,Account Name,Symbol,Description,Current value,% of account,Quantity,Last price
+ACCT-AAA,Brokerage - TOD,VTI,VANGUARD TOTAL STK MKT ETF,$30000.00,75.00%,90,$333.33
+ACCT-AAA,Brokerage - TOD,AAPL,APPLE INC,$10000.00,25.00%,40,$250.00
+ACCT-BBB,Rollover IRA,FXAIX,FIDELITY 500 INDEX FUND,$50000.00,100.00%,300,$166.67
+ACCT-CCC,401(k) Plan,,TARGET DATE 2040 FUND,$25000.00,100.00%,1500,$16.67
+"The data and information in this spreadsheet is provided to you solely for your use and is not for distribution. The spreadsheet is provided for informational purposes only, and is not intended to provide advice. For more information go to Fidelity.com."
+"Date downloaded Jun-06-2026 9:08 p.m ET"
