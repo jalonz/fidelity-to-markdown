@@ -106,7 +106,14 @@ constraints:
 - no_column_dropping
 - preserve_original_string_values
 input_cleanup:
-  column_aliases: {}
+  # Fidelity's "My View" export lowercases the second word of the account
+  # columns ("Account number"/"Account name") vs. the "Positions" export's
+  # "Account Number"/"Account Name". Normalize to the canonical names the
+  # required-column check expects. No-op for exports that already use the
+  # canonical casing (rename ignores absent source columns).
+  column_aliases:
+    Account number: Account Number
+    Account name: Account Name
   drop_columns: []
   drop_rows:
   - column: Account Number

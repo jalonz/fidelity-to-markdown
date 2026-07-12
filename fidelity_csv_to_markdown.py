@@ -441,7 +441,14 @@ def _load_and_clean(csv_path: Path, contract: dict) -> tuple[pd.DataFrame, str |
     """
     cleanup = contract.get("input_cleanup", {})
 
-    df = pd.read_csv(csv_path, dtype=str, index_col=False, encoding="utf-8-sig")
+    # keep_default_na=False: empty cells stay empty strings rather than float
+    # NaN. Without it, blank source cells render as the literal "nan" in the
+    # markdown — a string-preservation violation that injects a phantom value
+    # (see CLAUDE.md "String preservation is intentional"). Fidelity uses "--"
+    # for N/A (already a literal string) and blank for empty; nothing in the
+    # data relies on NaN coercion.
+    df = pd.read_csv(csv_path, dtype=str, index_col=False, encoding="utf-8-sig",
+                     keep_default_na=False)
 
     # Apply column aliases before anything else
     aliases = cleanup.get("column_aliases") or {}

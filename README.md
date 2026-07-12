@@ -74,7 +74,7 @@ python fidelity_csv_to_markdown.py \
 
 ## Fidelity Portal Column Selection
 
-The script is contract-driven — optional columns can be added, removed, or renamed via the contract without code changes — but the column set below is optimized for LLM portfolio analysis. Four columns are required and the run will abort if any are missing: `Account Name`, `Account Number`, `Symbol`, `Current value`. Configure **My View** in the Fidelity positions page before exporting to include these columns. An LLM given this data can reason about allocation, cost basis, embedded gains, income, fund costs, and sector exposure in a single pass.
+The script is contract-driven — optional columns can be added, removed, or renamed via the contract without code changes — but the column set below is optimized for LLM portfolio analysis. Four columns are required and the run will abort if any are missing: `Account Name`, `Account Number`, `Symbol`, `Current value`. Configure **My View** in the Fidelity positions page before exporting to include these columns. (My View exports the account columns as `Account number` / `Account name` — lowercase second word; the contract's `column_aliases` normalizes them to the canonical names above, so no manual fixup is needed.) An LLM given this data can reason about allocation, cost basis, embedded gains, income, fund costs, and sector exposure in a single pass.
 
 **Account & position identity**
 - Account Number
@@ -114,8 +114,8 @@ The script is contract-driven — optional columns can be added, removed, or ren
 - Amount per share
 - Pay date
 - Payment frequency
-- Dist. yield
-- Distribution yield as of
+- Dist. rate
+- Distribution rate as of
 - SEC yield
 - SEC yield as of
 - Est. annual income
