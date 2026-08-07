@@ -91,6 +91,7 @@ All original columns and string values are preserved without modification
 """
 
 import argparse
+import csv
 from collections import Counter
 from dataclasses import dataclass
 import re
@@ -447,8 +448,27 @@ def _load_and_clean(csv_path: Path, contract: dict) -> tuple[pd.DataFrame, str |
     # (see CLAUDE.md "String preservation is intentional"). Fidelity uses "--"
     # for N/A (already a literal string) and blank for empty; nothing in the
     # data relies on NaN coercion.
-    df = pd.read_csv(csv_path, dtype=str, index_col=False, encoding="utf-8-sig",
-                     keep_default_na=False)
+    #
+    # Fidelity occasionally emits a trailing comma on every data row, giving
+    # data rows one more field than the header. Detect and strip the surplus
+    # trailing fields before pandas sees the data so it never raises a
+    # ParserWarning. Uses csv.reader to handle quoted cells correctly, then
+    # writes a normalised in-memory CSV for pandas to consume.
+    with open(csv_path, encoding="utf-8-sig", newline="") as _f:
+        _rows = list(csv.reader(_f))
+    _header_len = len(_rows[0]) if _rows else 0
+    _n_max = max((len(r) for r in _rows if r), default=_header_len)
+    if _n_max > _header_len:
+        import io as _io
+        _buf = _io.StringIO()
+        _writer = csv.writer(_buf)
+        for _row in _rows:
+            _writer.writerow(_row[:_header_len])
+        _buf.seek(0)
+        df = pd.read_csv(_buf, dtype=str, index_col=False, keep_default_na=False)
+    else:
+        df = pd.read_csv(csv_path, dtype=str, index_col=False, encoding="utf-8-sig",
+                         keep_default_na=False)
 
     # Apply column aliases before anything else
     aliases = cleanup.get("column_aliases") or {}
