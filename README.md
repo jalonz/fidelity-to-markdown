@@ -22,13 +22,15 @@ Converts Fidelity "Positions" CSV exports into markdown format. Supports single-
 
 ## Setup
 
-Requires [uv](https://docs.astral.sh/uv/). The script is self-contained: its Python version and dependencies are declared inline ([PEP 723](https://peps.python.org/pep-0723/)), so there is no setup step — uv builds and caches the environment on first run:
+None. The script uses only the Python standard library and needs Python 3.10 or later — no packages, no venv:
 
 ```bash
-uv run fidelity_csv_to_markdown.py --csv path/to/positions.csv
-# or, since the shebang invokes uv:
+python3 fidelity_csv_to_markdown.py --csv path/to/positions.csv
+# or run it directly (python3 shebang):
 ./fidelity_csv_to_markdown.py --csv path/to/positions.csv
 ```
+
+[uv](https://docs.astral.sh/uv/) users can also `uv run fidelity_csv_to_markdown.py ...`; the inline [PEP 723](https://peps.python.org/pep-0723/) block declares the Python version and no dependencies.
 
 ---
 
@@ -40,12 +42,12 @@ usage: fidelity_csv_to_markdown.py (--csv FILE | --csvdir DIR) [--outdir DIR] [-
 
 Single file:
 ```bash
-uv run fidelity_csv_to_markdown.py --csv path/to/positions.csv
+python3 fidelity_csv_to_markdown.py --csv path/to/positions.csv
 ```
 
 Batch (all CSVs in a directory):
 ```bash
-uv run fidelity_csv_to_markdown.py --csvdir path/to/exports/
+python3 fidelity_csv_to_markdown.py --csvdir path/to/exports/
 ```
 
 **Arguments:**
@@ -153,10 +155,10 @@ Cell values are passed through verbatim with one exception: a literal `|` is esc
 
 ## Tests
 
-Pytest suite under `tests/` covers `convert_csv()` and CLI behavior.
+Pytest suite under `tests/` covers `convert_csv()` and CLI behavior. pytest is the only test dependency.
 
 ```bash
-uv run --with-requirements fidelity_csv_to_markdown.py --with pytest pytest
+uv run --with pytest pytest     # or: python3 -m pytest
 ```
 
 ---

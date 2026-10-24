@@ -1,10 +1,10 @@
+import csv
 import re
 from dataclasses import replace
 
-import pandas as pd
 import pytest
 
-from fidelity_csv_to_markdown import CONTRACT, AccountSection, ConvertResult, Total, convert_csv
+from fidelity_csv_to_markdown import CONTRACT, AccountSection, ConvertResult, Total, _pipe_table, convert_csv
 
 
 def test_happy_path_dry_run(fixture_csv_path, contract, tmp_path):
@@ -121,11 +121,11 @@ def test_account_index_lists_all_accounts(multi_fixture_csv_path, contract, tmp_
     assert "- 401(k) Plan (ACCT-CCC): $25,000.00" in body
 
 
-def test_one_bad_account_aborts(multi_fixture_df, contract, write_csv, tmp_path):
-    df = multi_fixture_df.copy()
+def test_one_bad_account_aborts(multi_fixture_sheet, contract, write_csv, tmp_path):
+    sheet = multi_fixture_sheet
     # Blank the Account Name on the BBB account only — fail-fast aborts the file.
-    df.loc[df["Account Number"] == "ACCT-BBB", "Account Name"] = ""
-    csv = write_csv(df, "bad_account.csv")
+    sheet.set("Account Name", "", where=lambda r: r["Account Number"] == "ACCT-BBB")
+    csv = write_csv(sheet, "bad_account.csv")
 
     with pytest.raises(AssertionError, match="Account Name is empty for account ACCT-BBB"):
         convert_csv(csv, tmp_path, dry_run=True, contract=contract)
@@ -149,45 +149,43 @@ def test_collision_rejected(fixture_csv_path, contract, tmp_path):
         convert_csv(fixture_csv_path, tmp_path, dry_run=False, contract=contract)
 
 
-def test_missing_required_column_rejected(fixture_df, contract, write_csv, tmp_path):
-    df = fixture_df.drop(columns=["Account Name"])
-    csv = write_csv(df, "no_account_name.csv")
+def test_missing_required_column_rejected(fixture_sheet, contract, write_csv, tmp_path):
+    fixture_sheet.drop("Account Name")
+    csv = write_csv(fixture_sheet, "no_account_name.csv")
 
     with pytest.raises(AssertionError, match="required column missing: 'Account Name'"):
         convert_csv(csv, tmp_path, dry_run=True, contract=contract)
 
 
-def test_missing_symbol_column_rejected(fixture_df, contract, write_csv, tmp_path):
-    df = fixture_df.drop(columns=["Symbol"])
-    csv = write_csv(df, "no_symbol.csv")
+def test_missing_symbol_column_rejected(fixture_sheet, contract, write_csv, tmp_path):
+    fixture_sheet.drop("Symbol")
+    csv = write_csv(fixture_sheet, "no_symbol.csv")
 
     with pytest.raises(AssertionError, match="required column missing: 'Symbol'"):
         convert_csv(csv, tmp_path, dry_run=True, contract=contract)
 
 
-def test_empty_after_cleanup(fixture_df, contract, write_csv, tmp_path):
-    # Replace every data row's Account Number with the drop_rows pattern.
-    df = fixture_df.copy()
-    df["Account Number"] = "Date downloaded"
-    csv = write_csv(df, "all_dropped.csv")
+def test_empty_after_cleanup(fixture_sheet, contract, write_csv, tmp_path):
+    # Put the "date downloaded" footer marker in every row's Account Number.
+    fixture_sheet.set("Account Number", "Date downloaded")
+    csv = write_csv(fixture_sheet, "all_dropped.csv")
 
     with pytest.raises(AssertionError, match="no rows after cleanup"):
         convert_csv(csv, tmp_path, dry_run=True, contract=contract)
 
 
-def test_positions_lost_during_cleanup(fixture_df, contract, write_csv, tmp_path):
-    # Force a legitimate position row to match the drop_rows regex.
-    df = fixture_df.copy()
-    df.loc[0, "Account Number"] = "Date downloaded"
-    csv = write_csv(df, "position_lost.csv")
+def test_positions_lost_during_cleanup(fixture_sheet, contract, write_csv, tmp_path):
+    # Force a legitimate position row to match the "date downloaded" footer marker.
+    fixture_sheet.set("Account Number", "Date downloaded", row=0)
+    csv = write_csv(fixture_sheet, "position_lost.csv")
 
     with pytest.raises(AssertionError, match="positions lost during cleanup"):
         convert_csv(csv, tmp_path, dry_run=True, contract=contract)
 
 
-def test_column_aliases_applied(fixture_df, contract, write_csv, tmp_path):
-    df = fixture_df.rename(columns={"Symbol": "Ticker"})
-    csv = write_csv(df, "aliased.csv")
+def test_column_aliases_applied(fixture_sheet, contract, write_csv, tmp_path):
+    fixture_sheet.rename("Symbol", "Ticker")
+    csv = write_csv(fixture_sheet, "aliased.csv")
 
     aliased_contract = replace(contract, column_aliases={"Ticker": "Symbol"})
 
@@ -199,34 +197,42 @@ def test_drop_columns_removes_columns(fixture_csv_path, contract, tmp_path):
     dropped_contract = replace(contract, drop_columns=("Sector", "Industry"))
 
     result = convert_csv(fixture_csv_path, tmp_path, dry_run=False, contract=dropped_contract)
-    body = result.out_path.read_text(encoding="utf-8")
-    header_line = next(line for line in body.splitlines() if line.startswith("|"))
-    headers = [h.strip() for h in header_line.strip("|").split("|")]
+    headers = _headers(result)
     assert "Sector" not in headers
     assert "Industry" not in headers
     # Sibling columns like "Industry group" should still be present
     assert "Industry group" in headers
 
 
-def test_numeric_strings_preserved_verbatim(fixture_df, contract, write_csv, tmp_path):
-    # tabulate's numparse would rewrite "1.50" -> "1.5" and "0.000" -> "0".
-    df = fixture_df.copy()
-    df["Quantity"] = "1.50"
-    df.loc[1, "Quantity"] = "0.000"
-    csv = write_csv(df, "numeric_strings.csv")
+def test_numeric_strings_preserved_verbatim(fixture_sheet, contract, write_csv, tmp_path):
+    # tabulate's numparse (used through v4.0.0) rewrote "1.50" -> "1.5" and
+    # "0.000" -> "0"; the renderer must never reinterpret values.
+    fixture_sheet.set("Quantity", "1.50")
+    fixture_sheet.set("Quantity", "0.000", row=1)
+    csv = write_csv(fixture_sheet, "numeric_strings.csv")
 
     result = convert_csv(csv, tmp_path, dry_run=False, contract=contract)
-    cells = [c.strip() for line in result.out_path.read_text(encoding="utf-8").splitlines()
-             if line.startswith("|") for c in line.strip("|").split("|")]
+    cells = [c for line in _table_lines(result) for c in _split_row(line)]
     assert "1.50" in cells
     assert "0.000" in cells
 
 
 def _write_raw_csv(path, rows):
-    import csv as _csv
     with open(path, "w", newline="", encoding="utf-8") as f:
-        _csv.writer(f).writerows(rows)
+        csv.writer(f).writerows(rows)
     return path
+
+
+def _table_lines(result):
+    return [l for l in result.out_path.read_text(encoding="utf-8").splitlines() if l.startswith("|")]
+
+
+def _split_row(line):
+    return [c.strip() for c in line.strip("|").split("|")]
+
+
+def _headers(result):
+    return _split_row(_table_lines(result)[0])
 
 
 def test_duplicate_headers_preserved_verbatim(tmp_path):
@@ -236,9 +242,8 @@ def test_duplicate_headers_preserved_verbatim(tmp_path):
         ["X1", "Brokerage", "VTI", "$100.00", "+$1.00", "+$2.00"],
     ])
     result = convert_csv(path, tmp_path, dry_run=False, contract=replace(CONTRACT, drop_duplicate_columns=False))
-    header = next(l for l in result.out_path.read_text(encoding="utf-8").splitlines() if l.startswith("|"))
-    assert [h.strip() for h in header.strip("|").split("|")].count("Change $") == 2
-    assert "Change $.1" not in header
+    assert _headers(result).count("Change $") == 2
+    assert "Change $.1" not in _table_lines(result)[0]
 
 
 def test_duplicated_required_column_rejected(tmp_path):
@@ -265,11 +270,6 @@ def test_trailing_comma_rows_and_short_footer_rows(tmp_path):
 
 
 # ---- Duplicate columns ----
-
-def _headers(result):
-    line = next(l for l in result.out_path.read_text(encoding="utf-8").splitlines() if l.startswith("|"))
-    return [h.strip() for h in line.strip("|").split("|")]
-
 
 def test_identical_duplicate_columns_dropped(fixture_csv_path, contract, tmp_path):
     # The fixture's appended summary block repeats 8 headers, some differing only
@@ -348,7 +348,7 @@ def test_pipe_and_newline_cannot_break_table(tmp_path):
         ["X1", "Brokerage", "VTI", "A | B\nC", "$100.00"],
     ])
     result = convert_csv(path, tmp_path, dry_run=False)
-    table = [l for l in result.out_path.read_text(encoding="utf-8").splitlines() if l.startswith("|")]
+    table = _table_lines(result)
     assert len(table) == 3  # header, separator, one data row
     assert r"A \| B C" in table[2]
     # Every line has the same number of unescaped cell separators.
@@ -411,8 +411,26 @@ def test_account_index_follows_heading_template(fixture_csv_path, tmp_path):
     assert "- Individual - TOD: $100,000.00" in body
 
 
-def test_fixture_df_keeps_verbatim_headers(fixture_df):
-    # Fixtures load like the script reads: no ".1" mangling, no NaN.
-    assert list(fixture_df.columns).count("Total gain/loss $") == 2
-    assert not any(c.endswith(".1") for c in fixture_df.columns)
-    assert not fixture_df.isna().any().any()
+def test_fixture_sheet_keeps_verbatim_headers(fixture_sheet):
+    # Fixtures load like the script reads: no ".1" mangling, every cell a str,
+    # every row header-width.
+    assert fixture_sheet.header.count("Total gain/loss $") == 2
+    assert not any(c.endswith(".1") for c in fixture_sheet.header)
+    assert all(isinstance(c, str) for r in fixture_sheet.rows for c in r)
+    assert {len(r) for r in fixture_sheet.rows} == {len(fixture_sheet.header)}
+
+
+def test_pipe_table_format():
+    # Golden output of tabulate's "pipe" format with disable_numparse=True,
+    # which every release through v4.1.0 emitted: cells stripped, headers not,
+    # left-aligned, width = max(widest cell, header + 2).
+    got = _pipe_table(
+        ["A", " Lead", "", "Trail ", "LongHeaderName"],
+        [["x", " sp", "", "y  ", "1"], ["longer value", "", "z", "", ""]],
+    )
+    assert got == (
+        "| A            |  Lead   |    | Trail    | LongHeaderName   |\n"
+        "|:-------------|:--------|:---|:---------|:-----------------|\n"
+        "| x            | sp      |    | y        | 1                |\n"
+        "| longer value |         | z  |          |                  |"
+    )

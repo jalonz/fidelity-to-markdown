@@ -4,6 +4,29 @@ History for `fidelity_csv_to_markdown.py`. Until 4.0.0 the YAML contract
 carried its own version line (contract 1.0.0 → 3.0.0); since 4.0.0 the contract
 is inline and shares the script's version.
 
+## 5.0.0 — 2026-10-24
+
+- **Standard library only.** pandas and tabulate are removed: the table is
+  plain lists (`Table`: header + all-str rows) and markdown comes from
+  `_pipe_table`, which reproduces tabulate's "pipe" format byte-for-byte
+  (fuzzed against tabulate on 3,000 random tables; golden test added). Output
+  is byte-identical to 4.1.0 on real multi-account exports. Environment drops
+  from 106 MB to nothing; import time from ~0.24 s to ~0.006 s; the test
+  suite from ~3.7 s to ~0.6 s.
+- **uv is no longer required** (reverses 4.1.0): run with `python3`; the
+  shebang is `python3` again. The PEP 723 block remains, with no
+  dependencies, so `uv run` still works.
+- Removes the pandas-specific failure modes behind earlier bugs: duplicate
+  header names can no longer turn a column lookup into a frame, and there is
+  no NaN. Cleanup tracks active column positions over full-width raw rows, so
+  removed duplicate copies are verified without index alignment.
+- CI: `.github/workflows/tests.yml` runs pytest on Python 3.10 and 3.14 for
+  every PR and push to `main`.
+- Simplifications: `_read_csv` extracted; footer filter flattened; `main()`
+  tidied (`show_bar`, no empty branch). Tests: pandas fixtures replaced by a
+  small `Sheet` helper (`fixture_sheet`, `read_sheet`) built on `_read_csv`;
+  duplicated table-parsing and fixture-path code consolidated.
+
 ## 4.1.0 — 2026-10-24
 
 Fixes from a full-file review of v4.0.0.

@@ -1,7 +1,7 @@
-#!/usr/bin/env -S uv run --script
+#!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.10"
-# dependencies = ["pandas>=2.2", "tabulate>=0.9"]
+# dependencies = []
 # ///
 """
 fidelity_csv_to_markdown
@@ -16,17 +16,16 @@ output policy live in the inline CONTRACT below. History is in CHANGELOG.md.
 import argparse
 import csv
 from collections import Counter
+from collections.abc import Iterable
 from dataclasses import dataclass, fields
 from decimal import Decimal, InvalidOperation
+from pathlib import Path
 import re
 import sys
 import types
 from typing import get_args, get_origin
-from pathlib import Path
 
-import pandas as pd
-
-__version__ = "4.1.0"
+__version__ = "5.0.0"
 
 REQUIRED_COLUMNS = ("Account Name", "Account Number", "Symbol", "Current value")
 
@@ -35,8 +34,8 @@ REQUIRED_COLUMNS = ("Account Name", "Account Number", "Symbol", "Current value")
 # Helpers
 # ================================
 
-def norm_str(val: object) -> str:
-    return "" if pd.isna(val) else str(val).strip()
+def norm_str(val: str) -> str:
+    return val.strip()
 
 
 def _position_pairs(symbols, values) -> Counter:
@@ -62,7 +61,7 @@ def _size_str(path: Path) -> str:
 _SENTINELS = ("", "--")
 
 
-def _parse_currency(val: object) -> Decimal | None:
+def _parse_currency(val: str) -> Decimal | None:
     """Parse '$1,234.56', '-$1,234.56', '+$1.00', '($1,234.56)' exactly.
     Returns None for the blank/'--' sentinels; raises ValueError otherwise."""
     s = norm_str(val)
@@ -90,63 +89,37 @@ def _format_usd(amount: Decimal) -> str:
     return f"${amount:,.2f}"
 
 
-def _extract_as_of(df: pd.DataFrame, pattern: str) -> str | None:
-    """Search every cell for the regex; return the first capture group's match."""
+def _extract_as_of(cells: Iterable[str], pattern: str) -> str | None:
+    """Search the cells in order; return the first match's capture group."""
     compiled = re.compile(pattern, re.IGNORECASE)
-    # Column-major, positional: header names may repeat, so df[col] is unsafe.
-    for val in df.to_numpy().ravel(order="F"):
+    for val in cells:
         m = compiled.search(val)
         if m:
             return (m.group(1) if m.groups() else m.group(0)).strip()
     return None
 
 
-def _split_duplicate_columns(df: pd.DataFrame) -> tuple[pd.DataFrame, list[tuple[str, pd.Series]]]:
-    """Remove columns whose header repeats an earlier one (whitespace/case
-    insensitive), keeping the first occurrence. Returns (df with unique headers,
-    [(kept header, removed copy)]). Run before any label-based access so a
-    repeated required column can't turn df[col] into a DataFrame; the copies'
-    values are checked later by _verify_duplicate_columns."""
-    first_seen: dict[str, str] = {}
-    removed: list[tuple[str, pd.Series]] = []
-    keep: list[int] = []
-    for i, name in enumerate(df.columns):
-        key = name.strip().casefold()
-        if key in first_seen:
-            removed.append((first_seen[key], df.iloc[:, i]))
-        else:
-            first_seen[key] = name
-            keep.append(i)
-    return df.iloc[:, keep], removed
+@dataclass
+class Table:
+    """All-str rows under a header whose names may repeat (with
+    drop_duplicate_columns off). Lookups by name take the first occurrence."""
+    header: list[str]
+    rows: list[list[str]]
+
+    def col(self, name: str) -> list[str]:
+        i = self.header.index(name)
+        return [r[i] for r in self.rows]
 
 
-def _verify_duplicate_columns(df: pd.DataFrame, removed: list[tuple[str, pd.Series]]) -> None:
-    """Abort unless every removed copy matches its kept column on the rows that
-    survived cleanup (so footer rows can't cause a spurious mismatch)."""
-    for kept_name, copy in removed:
-        if kept_name not in df.columns:
-            continue  # removed on purpose by drop_columns; nothing to compare
-        kept = df[kept_name].map(norm_str).to_numpy()
-        dup = copy.loc[df.index].map(norm_str).to_numpy()
-        mismatch = (kept != dup).nonzero()[0]
-        if len(mismatch):
-            r = mismatch[0]
-            where = f"Symbol {df['Symbol'].iloc[r]!r}" if "Symbol" in df.columns else f"row {r + 1}"
-            raise AssertionError(
-                f"FAIL duplicate column {copy.name!r} differs from {kept_name!r} "
-                f"at {where}: {kept[r]!r} vs {dup[r]!r}"
-            )
-
-
-def _sum_column(df: pd.DataFrame, col: str) -> str | None:
+def _sum_column(table: Table, col: str) -> str | None:
     """Sum one column exactly and format as USD — plain pass-through
     aggregation (CLAUDE.md carve-out). Blank/'--' cells and anything
     _warn_on_total_columns already reported are skipped; returns None if the
     column is absent or nothing parses."""
-    if col not in df.columns:
+    if col not in table.header:
         return None
     values = []
-    for x in df[col]:
+    for x in table.col(col):
         try:
             v = _parse_currency(x)
         except ValueError:
@@ -156,16 +129,16 @@ def _sum_column(df: pd.DataFrame, col: str) -> str | None:
     return _format_usd(sum(values)) if values else None
 
 
-def _warn_on_total_columns(df: pd.DataFrame, columns: set[str]) -> None:
+def _warn_on_total_columns(table: Table, columns: set[str]) -> None:
     """Warn once per totals column that is missing or has cells that are
     neither a currency value nor a blank/'--' sentinel — those are left out of
     every total, so the reader must be told."""
     for col in sorted(columns):
-        if col not in df.columns:
+        if col not in table.header:
             print(f"WARNING: totals column '{col}' not in CSV — skipped", file=sys.stderr)
             continue
         bad = []
-        for x in df[col]:
+        for x in table.col(col):
             try:
                 _parse_currency(x)
             except ValueError:
@@ -175,9 +148,9 @@ def _warn_on_total_columns(df: pd.DataFrame, columns: set[str]) -> None:
                   + ", ".join(repr(b) for b in bad[:5]), file=sys.stderr)
 
 
-def _compute_totals(df: pd.DataFrame, totals: "tuple[Total, ...]") -> list[tuple[str, str]]:
+def _compute_totals(table: Table, totals: "tuple[Total, ...]") -> list[tuple[str, str]]:
     """One (label, $amount) pair per configured Total that yields a value."""
-    pairs = [(t.label, _sum_column(df, t.column)) for t in totals]
+    pairs = [(t.label, _sum_column(table, t.column)) for t in totals]
     return [(label, value) for label, value in pairs if value is not None]
 
 
@@ -187,17 +160,31 @@ def _md_cell(val: str) -> str:
     return re.sub(r"\r\n|\r|\n", " ", val).replace("|", r"\|")
 
 
-def _markdown_safe(df: pd.DataFrame) -> pd.DataFrame:
-    out = df.map(_md_cell)
-    out.columns = [_md_cell(c) for c in df.columns]
-    return out
+def _pipe_table(header: list[str], rows: list[list[str]]) -> str:
+    """Render a markdown pipe table, byte-for-byte what tabulate's "pipe"
+    format with disable_numparse=True produced through v4.1.0: values are
+    never reinterpreted, cells (not headers) are stripped, every column is
+    left-aligned, and a column is as wide as its widest cell or its header
+    plus 2, whichever is larger."""
+    rows = [[c.strip() for c in r] for r in rows]
+    widths = [max([len(h) + 2] + [len(r[i]) for r in rows]) for i, h in enumerate(header)]
+
+    def line(cells: list[str]) -> str:
+        return "|" + "|".join(f" {c.ljust(w)} " for c, w in zip(cells, widths)) + "|"
+
+    separator = "|" + "|".join(":" + "-" * (w + 1) for w in widths) + "|"
+    return "\n".join([line(header), separator] + [line(r) for r in rows])
 
 
-def _format_heading(template: str, row: pd.Series) -> str:
+def _format_heading(template: str, header: list[str], row: list[str]) -> str:
     """Substitute {Column Name} placeholders in a heading template from a row."""
+    values: dict[str, str] = {}
+    for name, val in zip(header, row):
+        values.setdefault(name, val)  # first occurrence, like Table.col
+
     def repl(m: re.Match) -> str:
         col = m.group(1)
-        return norm_str(row[col]) if col in row.index else m.group(0)
+        return norm_str(values[col]) if col in values else m.group(0)
     return re.sub(r"\{([^}]+)\}", repl, template)
 
 
@@ -373,15 +360,9 @@ class ConvertResult:
     dry_run: bool
 
 
-def _load_and_clean(csv_path: Path, contract: Contract) -> tuple[pd.DataFrame, str | None, Counter, list[str]]:
-    """Read, alias, drop duplicate columns, extract as_of, drop rows/columns,
-    strip footers, and verify duplicates and required-column integrity. Returns (cleaned
-    df, as_of, raw position pairs captured before cleanup for loss detection,
-    dropped duplicate column names).
-    """
-    # Read with csv.reader and build the frame directly so every cell is a str
-    # by construction — no dtype coercion and no NaN (a blank source cell would
-    # otherwise render as a phantom "nan"; see CLAUDE.md "String preservation").
+def _read_csv(csv_path: Path) -> tuple[list[str], list[list[str]]]:
+    """Read a CSV into (header, rows): verbatim (possibly duplicate) header
+    names, every cell a str exactly as written, every row header-width."""
     # Short rows (Fidelity's footer) are padded to the header width. Surplus
     # fields are dropped only when empty (the trailing-comma export); a
     # non-empty surplus field would be silently lost data, so it aborts.
@@ -395,88 +376,131 @@ def _load_and_clean(csv_path: Path, contract: Contract) -> tuple[pd.DataFrame, s
                 f"FAIL CSV row {row_no} has {len(r)} fields but the header has {width}; "
                 f"extra non-empty values would be lost: {extra[:5]}"
             )
-    df = pd.DataFrame([(r + [""] * width)[:width] for r in rows if r], columns=header)
+    return header, [(r + [""] * width)[:width] for r in rows if r]
+
+
+def _load_and_clean(csv_path: Path, contract: Contract) -> tuple[Table, str | None, Counter, list[str]]:
+    """Read, alias, drop duplicate columns, extract as_of, drop rows/columns,
+    strip footers, and verify duplicates and required-column integrity.
+    Returns (cleaned table, as_of, raw position pairs captured before cleanup
+    for loss detection, dropped duplicate column names).
+    """
+    header, rows = _read_csv(csv_path)
 
     # Apply column aliases before anything else
-    if contract.column_aliases:
-        df = df.rename(columns=contract.column_aliases)
+    header = [contract.column_aliases.get(h, h) for h in header]
 
-    # Duplicate columns are removed now, before any df[col] lookup, and verified
-    # after cleanup below.
-    removed_duplicates: list[tuple[str, pd.Series]] = []
+    # Cleanup works on full-width raw rows plus the list of `active` column
+    # positions; removed columns (duplicate copies, drop_columns) leave
+    # `active` but stay in the rows, so duplicate copies can still be verified
+    # after rows are dropped. The output table is projected at the end.
+    active = list(range(len(header)))
+
+    def find(name: str) -> int | None:
+        return next((i for i in active if header[i] == name), None)
+
+    # Duplicate columns leave `active` now and are verified after cleanup
+    # below, on the rows that survive (so footer rows can't cause a spurious
+    # mismatch).
+    duplicates: list[tuple[int, int]] = []  # (kept position, copy position)
     if contract.drop_duplicate_columns:
-        df, removed_duplicates = _split_duplicate_columns(df)
+        first_seen: dict[str, int] = {}
+        for i, name in enumerate(header):
+            key = name.strip().casefold()
+            if key in first_seen:
+                duplicates.append((first_seen[key], i))
+            else:
+                first_seen[key] = i
+        copies = {copy for _, copy in duplicates}
+        active = [i for i in active if i not in copies]
 
     # Header names are kept verbatim, so with dedup off Fidelity's repeated
     # summary block yields duplicate names. Fine for pass-through columns; a
-    # repeated required column would make df[col] ambiguous, so reject it here,
-    # before the first label-based access.
+    # repeated required column is ambiguous (which copy is the real one?), so
+    # reject it.
+    active_names = [header[i] for i in active]
     for col in REQUIRED_COLUMNS:
-        if list(df.columns).count(col) > 1:
+        if active_names.count(col) > 1:
             raise AssertionError(f"FAIL required column duplicated: '{col}'")
 
     # Baseline position pairs for loss detection. Only rows with an Account
     # Number can be holdings (an empty one aborts at render anyway); this keeps
     # a one-field footer row out of the baseline when its text lands in Symbol.
     raw_position_pairs: Counter = Counter()
-    if all(c in df.columns for c in ("Account Number", "Symbol", "Current value")):
-        held = df[df["Account Number"].str.strip() != ""]
-        raw_position_pairs = _position_pairs(held["Symbol"], held["Current value"])
+    acct, sym, val = find("Account Number"), find("Symbol"), find("Current value")
+    if None not in (acct, sym, val):
+        held = [r for r in rows if r[acct].strip()]
+        raw_position_pairs = _position_pairs([r[sym] for r in held], [r[val] for r in held])
 
-    # Extract "As of" timestamp BEFORE drop_rows strips it. The Fidelity
-    # "Date downloaded ..." footer is otherwise lost to cleanup.
+    # Extract "As of" timestamp BEFORE rows are dropped. The Fidelity
+    # "Date downloaded ..." footer is otherwise lost to cleanup. Searched
+    # column by column.
     as_of: str | None = None
     if contract.summary_header and contract.as_of_pattern:
-        as_of = _extract_as_of(df, contract.as_of_pattern)
+        as_of = _extract_as_of((r[i] for i in active for r in rows), contract.as_of_pattern)
 
     # Drop rows per contract
     for rule in contract.drop_rows:
-        if rule.column not in df.columns:
+        i = find(rule.column)
+        if i is None:
             print(f"WARNING: drop_rows column '{rule.column}' not in CSV — skipped", file=sys.stderr)
             continue
-        df = df[~df[rule.column].str.match(rule.regex, na=False)]
+        pattern = re.compile(rule.regex)
+        rows = [r for r in rows if not pattern.match(r[i])]
 
-    # Drop columns per contract
+    # Drop columns per contract (by exact name: every active copy)
     for col in contract.drop_columns:
-        if col in df.columns:
-            df = df.drop(columns=[col])
-        else:
+        if find(col) is None:
             print(f"WARNING: drop_columns entry '{col}' not in CSV — skipped", file=sys.stderr)
+        else:
+            active = [i for i in active if header[i] != col]
 
-    # Footer/disclaimer removal (skip on empty df: agg+axis=1 on zero rows
-    # returns a DataFrame instead of a Series in pandas 3.x and crashes the
-    # .str accessor)
-    if contract.footer_markers and not df.empty:
-        markers_lc = [m.lower() for m in contract.footer_markers if m.strip()]
-        if markers_lc:
-            row_text = df.agg(" | ".join, axis=1).str.lower()
-            pattern = "|".join(re.escape(m) for m in markers_lc)
-            df = df[~row_text.str.contains(pattern, regex=True, na=False)]
+    # Footer/disclaimer removal: case-insensitive substring anywhere in the row
+    markers = [m.lower() for m in contract.footer_markers if m.strip()]
+    if markers:
+        def is_footer(r: list[str]) -> bool:
+            text = " | ".join(r[i] for i in active).lower()
+            return any(m in text for m in markers)
+        rows = [r for r in rows if not is_footer(r)]
 
-    _verify_duplicate_columns(df, removed_duplicates)
+    # Verify the removed duplicate copies on the surviving rows
+    sym = find("Symbol")
+    for kept, copy in duplicates:
+        if kept not in active:
+            continue  # removed on purpose by drop_columns; nothing to compare
+        for n, r in enumerate(rows, start=1):
+            a, b = norm_str(r[kept]), norm_str(r[copy])
+            if a != b:
+                where = f"Symbol {r[sym]!r}" if sym is not None else f"row {n}"
+                raise AssertionError(
+                    f"FAIL duplicate column {header[copy]!r} differs from {header[kept]!r} "
+                    f"at {where}: {a!r} vs {b!r}"
+                )
+
+    table = Table([header[i] for i in active], [[r[i] for i in active] for r in rows])
 
     if contract.summary_header or contract.section_header:
         total_cols = {t.column for t in contract.portfolio_totals + contract.section_totals}
         if contract.account_index:
             total_cols.add(contract.account_index_column)
-        _warn_on_total_columns(df, total_cols)
+        _warn_on_total_columns(table, total_cols)
 
     # ---- Verification ----
     for col in REQUIRED_COLUMNS:
-        if col not in df.columns:
+        if col not in table.header:
             raise AssertionError(f"FAIL required column missing: '{col}'")
 
-    if len(df) == 0:
+    if not table.rows:
         raise AssertionError("FAIL no rows after cleanup — check drop rules and footer markers")
 
-    return df, as_of, raw_position_pairs, [copy.name for _, copy in removed_duplicates]
+    return table, as_of, raw_position_pairs, [header[copy] for _, copy in duplicates]
 
 
-def _render_section(df_account: pd.DataFrame, contract: Contract) -> tuple[str, AccountSection]:
+def _render_section(account: Table, contract: Contract) -> tuple[str, AccountSection]:
     """Validate one account group and render its markdown section. Fail-fast:
     any invalid account aborts the whole file."""
-    acct_name_raw = norm_str(df_account["Account Name"].iloc[0])
-    acct_num_raw = norm_str(df_account["Account Number"].iloc[0])
+    acct_name_raw = norm_str(account.col("Account Name")[0])
+    acct_num_raw = norm_str(account.col("Account Number")[0])
 
     if not acct_num_raw:
         raise AssertionError("FAIL Account Number is empty for a section")
@@ -485,21 +509,18 @@ def _render_section(df_account: pd.DataFrame, contract: Contract) -> tuple[str, 
 
     # Tolerates an empty Symbol when Current value is present (e.g. a 401(k)
     # custom fund) — _position_pairs keeps a pair if either field is non-empty.
-    position_pairs = _position_pairs(df_account["Symbol"], df_account["Current value"])
+    position_pairs = _position_pairs(account.col("Symbol"), account.col("Current value"))
     if not position_pairs:
         raise AssertionError(f"FAIL no valid symbol/value pairs for account {acct_num_raw}")
 
-    heading = _format_heading(contract.heading_template, df_account.iloc[0])
+    heading = _format_heading(contract.heading_template, account.header, account.rows[0])
 
     totals: list[tuple[str, str]] = []
     if contract.section_header:
-        totals = _compute_totals(df_account, contract.section_totals)
+        totals = _compute_totals(account, contract.section_totals)
 
-    # disable_numparse: tabulate otherwise reformats numeric-looking strings
-    # ("1.50" -> "1.5", "0.000" -> "0") — a string-preservation violation.
-    table = _markdown_safe(df_account).to_markdown(index=False, disable_numparse=True)
-    if not table:
-        raise AssertionError(f"FAIL markdown serialization produced no output for account {acct_num_raw}")
+    table = _pipe_table([_md_cell(h) for h in account.header],
+                        [[_md_cell(c) for c in r] for r in account.rows])
 
     lines = [f"## {heading}", ""]
     for label, value in totals:
@@ -512,7 +533,7 @@ def _render_section(df_account: pd.DataFrame, contract: Contract) -> tuple[str, 
         account_name=acct_name_raw,
         account_number=acct_num_raw,
         heading=heading,
-        rows=len(df_account),
+        rows=len(account.rows),
         # Holdings, not distinct (symbol, value) pairs: identical lots count.
         positions=sum(position_pairs.values()),
         position_pairs=position_pairs,
@@ -526,18 +547,23 @@ def convert_csv(csv_path: Path, out_dir: Path, dry_run: bool, contract: Contract
     Convert one CSV to a sectioned markdown file (one section per account).
     Raises on failure. Does not print anything.
     """
-    df, as_of, raw_position_pairs, dropped_duplicates = _load_and_clean(csv_path, contract)
+    table, as_of, raw_position_pairs, dropped_duplicates = _load_and_clean(csv_path, contract)
 
     header_enabled = contract.summary_header
     index_enabled = header_enabled and contract.account_index
 
-    # Group by account, preserving first-seen order (sort=False).
+    # Group by account, preserving first-seen order (dicts keep insertion order).
+    groups: dict[str, list[list[str]]] = {}
+    for r, acct in zip(table.rows, table.col("Account Number")):
+        groups.setdefault(acct, []).append(r)
+
     sections_md: list[str] = []
     accounts: list[AccountSection] = []
     combined_pairs: Counter = Counter()
     index_lines: list[str] = []
 
-    for _, group in df.groupby("Account Number", sort=False):
+    for group_rows in groups.values():
+        group = Table(table.header, group_rows)
         section_md, section = _render_section(group, contract)
         sections_md.append(section_md)
         accounts.append(section)
@@ -558,7 +584,7 @@ def convert_csv(csv_path: Path, out_dir: Path, dry_run: bool, contract: Contract
     portfolio_totals: list[tuple[str, str]] = []
     header_lines: list[str] = []
     if header_enabled:
-        portfolio_totals = _compute_totals(df, contract.portfolio_totals)
+        portfolio_totals = _compute_totals(table, contract.portfolio_totals)
         if as_of:
             header_lines.append(f"**As of:** {as_of}")
         for label, value in portfolio_totals:
@@ -592,8 +618,8 @@ def convert_csv(csv_path: Path, out_dir: Path, dry_run: bool, contract: Contract
         as_of=as_of,
         portfolio_totals=portfolio_totals,
         accounts=accounts,
-        rows=len(df),
-        cols=len(df.columns),
+        rows=len(table.rows),
+        cols=len(table.header),
         dropped_duplicates=dropped_duplicates,
         position_pairs=combined_pairs,
         size=size,
@@ -686,40 +712,34 @@ def main():
             print(f"ERROR: no CSV files found in {d}", file=sys.stderr)
             sys.exit(1)
 
-    def out_dir_for(csv_path: Path) -> Path:
-        if args.outdir:
-            return Path(args.outdir).expanduser().resolve()
-        return csv_path.parent
-
     total = len(csv_files)
     batch = total > 1
+    show_bar = batch and not args.quiet and not args.verbose
     errors = []
 
     for i, csv_path in enumerate(csv_files, 1):
-        out_dir = out_dir_for(csv_path)
+        out_dir = Path(args.outdir).expanduser().resolve() if args.outdir else csv_path.parent
         if not args.dry_run:
             out_dir.mkdir(parents=True, exist_ok=True)
 
-        if batch and not args.quiet and not args.verbose:
+        if show_bar:
             sys.stdout.write(f"\r{_bar(i, total)}  {csv_path.name:<40}")
             sys.stdout.flush()
 
         try:
             result = convert_csv(csv_path, out_dir, args.dry_run)
 
-            if args.quiet:
-                pass
-            elif args.verbose:
+            if args.verbose:
                 if batch:
                     print(f"\n[{i}/{total}] {csv_path.name}")
                 print_result_verbose(result)
-            else:
+            elif not args.quiet:
                 if batch:
                     sys.stdout.write("\n")
                 print_result_quiet(result)
 
         except Exception as exc:
-            if batch and not args.quiet and not args.verbose:
+            if show_bar:
                 sys.stdout.write("\n")
             elif batch and args.verbose:
                 print(f"\n[{i}/{total}] {csv_path.name}")
