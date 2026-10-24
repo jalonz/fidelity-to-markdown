@@ -560,7 +560,9 @@ def _render_section(df_account: pd.DataFrame, contract: dict) -> tuple[str, Acco
     if section_cfg.get("enabled", False):
         totals = _compute_totals(df_account, section_cfg.get("totals"))
 
-    table = df_account.to_markdown(index=False)
+    # disable_numparse: tabulate otherwise reformats numeric-looking strings
+    # ("1.50" -> "1.5", "0.000" -> "0") — a string-preservation violation.
+    table = df_account.to_markdown(index=False, disable_numparse=True)
     if not table:
         raise AssertionError(f"FAIL markdown serialization produced no output for account {acct_num_raw}")
 

@@ -237,3 +237,17 @@ def test_drop_columns_removes_columns(fixture_csv_path, contract, tmp_path):
     assert "Industry" not in headers
     # Sibling columns like "Industry group" should still be present
     assert "Industry group" in headers
+
+
+def test_numeric_strings_preserved_verbatim(fixture_df, contract, write_csv, tmp_path):
+    # tabulate's numparse would rewrite "1.50" -> "1.5" and "0.000" -> "0".
+    df = fixture_df.copy()
+    df["Quantity"] = "1.50"
+    df.loc[1, "Quantity"] = "0.000"
+    csv = write_csv(df, "numeric_strings.csv")
+
+    result = convert_csv(csv, contract, tmp_path, dry_run=False)
+    cells = [c.strip() for line in result.out_path.read_text(encoding="utf-8").splitlines()
+             if line.startswith("|") for c in line.strip("|").split("|")]
+    assert "1.50" in cells
+    assert "0.000" in cells
