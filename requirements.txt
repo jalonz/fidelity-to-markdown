@@ -1,3 +1,2 @@
-pandas
-tabulate
-PyYAML
+pandas>=2.2
+tabulate>=0.9
