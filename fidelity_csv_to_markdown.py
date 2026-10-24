@@ -25,6 +25,8 @@ import pandas as pd
 
 __version__ = "4.0.0"
 
+REQUIRED_COLUMNS = ("Account Name", "Account Number", "Symbol", "Current value")
+
 
 # ================================
 # Helpers
@@ -88,32 +90,39 @@ def _extract_as_of(df: pd.DataFrame, pattern: str) -> str | None:
     return None
 
 
-def _drop_duplicate_columns(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
+def _split_duplicate_columns(df: pd.DataFrame) -> tuple[pd.DataFrame, list[tuple[str, pd.Series]]]:
     """Remove columns whose header repeats an earlier one (whitespace/case
-    insensitive) and whose values all match it; keep the first occurrence.
-    Raises AssertionError if a repeated column carries a different value.
-    Returns (df, dropped header names)."""
-    first_seen: dict[str, int] = {}
-    dropped: list[int] = []
+    insensitive), keeping the first occurrence. Returns (df with unique headers,
+    [(kept header, removed copy)]). Run before any label-based access so a
+    repeated required column can't turn df[col] into a DataFrame; the copies'
+    values are checked later by _verify_duplicate_columns."""
+    first_seen: dict[str, str] = {}
+    removed: list[tuple[str, pd.Series]] = []
+    keep: list[int] = []
     for i, name in enumerate(df.columns):
         key = name.strip().casefold()
-        if key not in first_seen:
-            first_seen[key] = i
-            continue
-        j = first_seen[key]
-        kept = df.iloc[:, j].map(norm_str).to_numpy()
-        dup = df.iloc[:, i].map(norm_str).to_numpy()
+        if key in first_seen:
+            removed.append((first_seen[key], df.iloc[:, i]))
+        else:
+            first_seen[key] = name
+            keep.append(i)
+    return df.iloc[:, keep], removed
+
+
+def _verify_duplicate_columns(df: pd.DataFrame, removed: list[tuple[str, pd.Series]]) -> None:
+    """Abort unless every removed copy matches its kept column on the rows that
+    survived cleanup (so footer rows can't cause a spurious mismatch)."""
+    for kept_name, copy in removed:
+        kept = df[kept_name].map(norm_str).to_numpy()
+        dup = copy.loc[df.index].map(norm_str).to_numpy()
         mismatch = (kept != dup).nonzero()[0]
         if len(mismatch):
             r = mismatch[0]
-            where = f"Symbol {df['Symbol'].iloc[r]!r}" if list(df.columns).count("Symbol") == 1 else f"row {r + 1}"
+            where = f"Symbol {df['Symbol'].iloc[r]!r}" if "Symbol" in df.columns else f"row {r + 1}"
             raise AssertionError(
-                f"FAIL duplicate column {name!r} differs from {df.columns[j]!r} "
+                f"FAIL duplicate column {copy.name!r} differs from {kept_name!r} "
                 f"at {where}: {kept[r]!r} vs {dup[r]!r}"
             )
-        dropped.append(i)
-    names = [df.columns[i] for i in dropped]
-    return df.iloc[:, [i for i in range(df.shape[1]) if i not in set(dropped)]], names
 
 
 def _sum_column(df: pd.DataFrame, col: str) -> str | None:
@@ -273,8 +282,8 @@ class ConvertResult:
 
 
 def _load_and_clean(csv_path: Path, contract: Contract) -> tuple[pd.DataFrame, str | None, Counter, list[str]]:
-    """Read, alias, extract as_of, drop rows/columns, strip footers, drop
-    duplicate columns, and verify required-column integrity. Returns (cleaned
+    """Read, alias, drop duplicate columns, extract as_of, drop rows/columns,
+    strip footers, and verify duplicates and required-column integrity. Returns (cleaned
     df, as_of, raw position pairs captured before cleanup for loss detection,
     dropped duplicate column names).
     """
@@ -291,6 +300,20 @@ def _load_and_clean(csv_path: Path, contract: Contract) -> tuple[pd.DataFrame, s
     # Apply column aliases before anything else
     if contract.column_aliases:
         df = df.rename(columns=contract.column_aliases)
+
+    # Duplicate columns are removed now, before any df[col] lookup, and verified
+    # after cleanup below.
+    removed_duplicates: list[tuple[str, pd.Series]] = []
+    if contract.drop_duplicate_columns:
+        df, removed_duplicates = _split_duplicate_columns(df)
+
+    # Header names are kept verbatim, so with dedup off Fidelity's repeated
+    # summary block yields duplicate names. Fine for pass-through columns; a
+    # repeated required column would make df[col] ambiguous, so reject it here,
+    # before the first label-based access.
+    for col in REQUIRED_COLUMNS:
+        if list(df.columns).count(col) > 1:
+            raise AssertionError(f"FAIL required column duplicated: '{col}'")
 
     # Baseline position pairs for loss detection
     raw_position_pairs: Counter = Counter()
@@ -327,26 +350,17 @@ def _load_and_clean(csv_path: Path, contract: Contract) -> tuple[pd.DataFrame, s
             pattern = "|".join(re.escape(m) for m in markers_lc)
             df = df[~row_text.str.contains(pattern, regex=True, na=False)]
 
-    # Duplicate columns — compared only on the rows that survive cleanup, so
-    # footer rows can't cause a spurious mismatch.
-    dropped_duplicates: list[str] = []
-    if contract.drop_duplicate_columns:
-        df, dropped_duplicates = _drop_duplicate_columns(df)
+    _verify_duplicate_columns(df, removed_duplicates)
 
     # ---- Verification ----
-    # Header names are kept verbatim, so Fidelity's repeated summary block
-    # ("Total gain/loss $" twice, etc.) yields duplicate names. That's fine for
-    # pass-through columns; a duplicated required column would be ambiguous.
-    for col in ("Account Name", "Account Number", "Symbol", "Current value"):
+    for col in REQUIRED_COLUMNS:
         if col not in df.columns:
             raise AssertionError(f"FAIL required column missing: '{col}'")
-        if list(df.columns).count(col) > 1:
-            raise AssertionError(f"FAIL required column duplicated: '{col}'")
 
     if len(df) == 0:
         raise AssertionError("FAIL no rows after cleanup — check drop rules and footer markers")
 
-    return df, as_of, raw_position_pairs, dropped_duplicates
+    return df, as_of, raw_position_pairs, [copy.name for _, copy in removed_duplicates]
 
 
 def _render_section(df_account: pd.DataFrame, contract: Contract) -> tuple[str, AccountSection]:

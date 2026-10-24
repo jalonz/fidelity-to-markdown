@@ -296,3 +296,32 @@ def test_duplicate_columns_kept_when_disabled(fixture_csv_path, contract, tmp_pa
                          contract=replace(contract, drop_duplicate_columns=False))
     assert result.cols == 49
     assert result.dropped_duplicates == []
+
+
+def test_identical_duplicate_required_columns_accepted(tmp_path):
+    # Repeated required columns must be deduped before label-based access:
+    # otherwise df["Current value"] is a DataFrame (bogus loss baseline) and
+    # df["Account Number"].str fails. Footer rows must not count as mismatches.
+    footer = ["Date downloaded Aug-07-2026 2:44 p.m ET"]
+    for extra, value in (("Current value", "$100.00"), ("Account Number", "X1")):
+        path = _write_raw_csv(tmp_path / f"dup_{extra}.csv", [
+            ["Account Number", "Account Name", "Symbol", "Current value", extra],
+            ["X1", "Brokerage", "VTI", "$100.00", value],
+            footer,
+        ])
+        result = convert_csv(path, tmp_path, dry_run=True)
+        assert result.cols == 4
+        assert result.dropped_duplicates == [extra]
+        assert result.accounts[0].positions == 1
+        assert result.as_of == "Aug-07-2026 2:44 p.m ET"
+
+
+def test_duplicated_account_number_rejected_when_dedup_off(tmp_path):
+    # The guard runs before drop_rows' .str access, so this is a clear
+    # AssertionError rather than an AttributeError.
+    path = _write_raw_csv(tmp_path / "dup_acct.csv", [
+        ["Account Number", "Account Name", "Symbol", "Current value", "Account Number"],
+        ["X1", "Brokerage", "VTI", "$100.00", "X1"],
+    ])
+    with pytest.raises(AssertionError, match="required column duplicated: 'Account Number'"):
+        convert_csv(path, tmp_path, dry_run=True, contract=replace(CONTRACT, drop_duplicate_columns=False))
