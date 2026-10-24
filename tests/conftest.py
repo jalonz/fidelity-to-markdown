@@ -2,19 +2,18 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
-import yaml
+
+from fidelity_csv_to_markdown import CONTRACT, Contract
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 FIXTURE_CSV = REPO_ROOT / "tests" / "fixtures" / "fidelity_positions_test.csv"
 MULTI_FIXTURE_CSV = REPO_ROOT / "tests" / "fixtures" / "fidelity_positions_multi_account_test.csv"
-CONTRACT_PATH = REPO_ROOT / "fidelity_csv_to_markdown.yaml"
 
 
 @pytest.fixture
-def contract() -> dict:
-    with open(CONTRACT_PATH, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
+def contract() -> Contract:
+    return CONTRACT
 
 
 @pytest.fixture

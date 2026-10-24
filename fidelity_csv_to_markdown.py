@@ -99,7 +99,8 @@ import sys
 from pathlib import Path
 
 import pandas as pd
-import yaml
+
+__version__ = "4.0.0"
 
 
 # ================================
@@ -155,10 +156,7 @@ def _format_usd(amount: float) -> str:
 
 def _extract_as_of(df: pd.DataFrame, pattern: str) -> str | None:
     """Search every cell for the regex; return the first capture group's match."""
-    try:
-        compiled = re.compile(pattern, re.IGNORECASE)
-    except re.error:
-        return None
+    compiled = re.compile(pattern, re.IGNORECASE)
     for col in df.columns:
         series = df[col].dropna().astype(str)
         for val in series:
@@ -168,7 +166,7 @@ def _extract_as_of(df: pd.DataFrame, pattern: str) -> str | None:
     return None
 
 
-def _compute_totals(df: pd.DataFrame, totals_cfg: list | None) -> list[tuple[str, str]]:
+def _compute_totals(df: pd.DataFrame, totals_cfg: "tuple[Total, ...]") -> list[tuple[str, str]]:
     """Sum each configured column verbatim and format as USD.
 
     Plain pass-through aggregation (CLAUDE.md carve-out) — one column summed,
@@ -176,11 +174,8 @@ def _compute_totals(df: pd.DataFrame, totals_cfg: list | None) -> list[tuple[str
     missing column logs a warning and yields no line.
     """
     totals: list[tuple[str, str]] = []
-    for entry in totals_cfg or []:
-        label = entry.get("label")
-        col = entry.get("column")
-        if not label or not col:
-            continue
+    for entry in totals_cfg:
+        label, col = entry.label, entry.column
         if col not in df.columns:
             print(f"WARNING: totals column '{col}' not in CSV — skipped", file=sys.stderr)
             continue
@@ -199,211 +194,101 @@ def _format_heading(template: str, row: pd.Series) -> str:
     return re.sub(r"\{([^}]+)\}", repl, template)
 
 
-def _markdown_cfg(contract: dict) -> dict:
-    return contract.get("output", {}).get("markdown", {}) or {}
-
-
-def _portfolio_header_cfg(contract: dict) -> dict:
-    return _markdown_cfg(contract).get("summary_header", {}) or {}
-
-
-def _section_header_cfg(contract: dict) -> dict:
-    return _markdown_cfg(contract).get("section_header", {}) or {}
-
-
-def _sections_cfg(contract: dict) -> dict:
-    return _markdown_cfg(contract).get("sections", {}) or {}
-
-
 # ================================
-# Contract validation
+# Contract
 # ================================
 #
-# The contract is load-bearing: cleanup, footer detection, and output policy all
-# live in it, and the conversion code reads keys with silent defaults. A typo'd
-# key (heading-template for heading_template) or a wrong type would therefore
-# degrade quietly to default behavior. validate_contract closes that gap at the
-# load boundary — it rejects unknown keys, wrong types, and uncompilable regexes
-# in the behavior-bearing subtrees, returning a list of problems (empty == valid)
-# so main() can abort loudly. Descriptive metadata (changelog, task, input,
-# constraints) is intentionally not policed: an unknown key there is harmless.
+# The contract is the declarative policy for this script: cleanup rules, footer
+# detection, sectioning, and which single-column sums to emit. It lives here as
+# a frozen dataclass rather than an external file so it is versioned, shipped,
+# and invoked together with the code that reads it. A mistyped field name fails
+# at import (TypeError) and an invalid regex fails at import (re.error) — no
+# separate schema checker needed. To adapt to a new Fidelity layout, edit
+# CONTRACT below; the conversion logic should not need to change.
 
-def _reject_unknown(path: str, node: dict, allowed: set, errors: list) -> None:
-    for key in node:
-        if key not in allowed:
-            errors.append(f"{path}: unknown key '{key}'")
-
-
-def _require_type(path: str, value: object, types, type_name: str, errors: list) -> bool:
-    # bool is a subclass of int; guard against it leaking past an int check.
-    if types is int and isinstance(value, bool):
-        errors.append(f"{path}: must be {type_name}")
-        return False
-    if not isinstance(value, types):
-        errors.append(f"{path}: must be {type_name}")
-        return False
-    return True
+@dataclass(frozen=True)
+class Total:
+    """One plain single-column sum (CLAUDE.md aggregation carve-out)."""
+    label: str
+    column: str
 
 
-def _validate_regex(path: str, value: object, errors: list) -> None:
-    if not _require_type(path, value, str, "a string", errors):
-        return
-    try:
-        re.compile(value)
-    except re.error as exc:
-        errors.append(f"{path}: invalid regex ({exc})")
+@dataclass(frozen=True)
+class DropRow:
+    column: str
+    regex: str
 
 
-def _validate_totals(path: str, totals: object, errors: list) -> None:
-    if not _require_type(path, totals, list, "a list", errors):
-        return
-    for i, entry in enumerate(totals):
-        p = f"{path}[{i}]"
-        if not _require_type(p, entry, dict, "a mapping", errors):
-            continue
-        _reject_unknown(p, entry, {"label", "column"}, errors)
-        for key in ("label", "column"):
-            if key not in entry:
-                errors.append(f"{p}.{key}: required")
-            else:
-                _require_type(f"{p}.{key}", entry[key], str, "a string", errors)
+@dataclass(frozen=True)
+class Contract:
+    # ---- input cleanup ----
+    # Renames applied before anything else (absent source columns are ignored).
+    column_aliases: dict[str, str]
+    # Columns removed from the output entirely.
+    drop_columns: tuple[str, ...]
+    # Rows whose `column` matches `regex` (re.match) are dropped.
+    drop_rows: tuple[DropRow, ...]
+    # Case-insensitive substrings marking disclaimer/footer rows for removal.
+    # Never use generic brand tokens ("fidelity") — they appear in security names.
+    footer_markers: tuple[str, ...]
+
+    # ---- sections ----
+    # Column the file is split on; account order is first-seen (no sorting).
+    group_by: str
+    # Each section's H2 heading, filled from that account's first row.
+    heading_template: str
+
+    # ---- portfolio header (top of file) ----
+    summary_header: bool
+    # Case-insensitive regex searched across all cells *before* drop_rows; the
+    # first capture group is emitted verbatim as "As of:". Missing is non-fatal.
+    as_of_pattern: str | None
+    # Each sums one column across ALL accounts.
+    portfolio_totals: tuple[Total, ...]
+    # One "- <name> (<number>): $X" line per account (sum of account_index_column).
+    account_index: bool
+    account_index_label: str
+    account_index_column: str
+
+    # ---- per-account subtotal under each section heading ----
+    section_header: bool
+    section_totals: tuple[Total, ...]
+
+    def __post_init__(self) -> None:
+        # Fail at import, not mid-run, on an uncompilable pattern.
+        for rule in self.drop_rows:
+            re.compile(rule.regex)
+        if self.as_of_pattern:
+            re.compile(self.as_of_pattern)
 
 
-def _validate_sections(sections: object, errors: list) -> None:
-    if sections is None:
-        return
-    p = "output.markdown.sections"
-    if not _require_type(p, sections, dict, "a mapping", errors):
-        return
-    _reject_unknown(p, sections, {"group_by", "heading_template"}, errors)
-    for key in ("group_by", "heading_template"):
-        if key in sections:
-            _require_type(f"{p}.{key}", sections[key], str, "a string", errors)
-
-
-def _validate_summary_header(sh: object, errors: list) -> None:
-    if sh is None:
-        return
-    p = "output.markdown.summary_header"
-    if not _require_type(p, sh, dict, "a mapping", errors):
-        return
-    _reject_unknown(p, sh, {"enabled", "as_of", "totals", "account_index"}, errors)
-    if "enabled" in sh:
-        _require_type(f"{p}.enabled", sh["enabled"], bool, "a boolean", errors)
-    if "as_of" in sh:
-        ao = sh["as_of"]
-        if _require_type(f"{p}.as_of", ao, dict, "a mapping", errors):
-            _reject_unknown(f"{p}.as_of", ao, {"pattern"}, errors)
-            if "pattern" in ao:
-                _validate_regex(f"{p}.as_of.pattern", ao["pattern"], errors)
-    if "totals" in sh:
-        _validate_totals(f"{p}.totals", sh["totals"], errors)
-    if "account_index" in sh:
-        ai = sh["account_index"]
-        if _require_type(f"{p}.account_index", ai, dict, "a mapping", errors):
-            _reject_unknown(f"{p}.account_index", ai, {"enabled", "label", "total_column"}, errors)
-            if "enabled" in ai:
-                _require_type(f"{p}.account_index.enabled", ai["enabled"], bool, "a boolean", errors)
-            for key in ("label", "total_column"):
-                if key in ai:
-                    _require_type(f"{p}.account_index.{key}", ai[key], str, "a string", errors)
-
-
-def _validate_section_header(sh: object, errors: list) -> None:
-    if sh is None:
-        return
-    p = "output.markdown.section_header"
-    if not _require_type(p, sh, dict, "a mapping", errors):
-        return
-    _reject_unknown(p, sh, {"enabled", "totals"}, errors)
-    if "enabled" in sh:
-        _require_type(f"{p}.enabled", sh["enabled"], bool, "a boolean", errors)
-    if "totals" in sh:
-        _validate_totals(f"{p}.totals", sh["totals"], errors)
-
-
-def _validate_input_cleanup(cleanup: object, errors: list) -> None:
-    if not _require_type("input_cleanup", cleanup, dict, "a mapping", errors):
-        return
-    _reject_unknown("input_cleanup", cleanup,
-                    {"column_aliases", "drop_columns", "drop_rows", "footer_detection_policy"}, errors)
-
-    if "column_aliases" in cleanup:
-        _require_type("input_cleanup.column_aliases", cleanup["column_aliases"], dict, "a mapping", errors)
-
-    if "drop_columns" in cleanup:
-        dc = cleanup["drop_columns"]
-        if _require_type("input_cleanup.drop_columns", dc, list, "a list", errors):
-            for i, col in enumerate(dc):
-                _require_type(f"input_cleanup.drop_columns[{i}]", col, str, "a string", errors)
-
-    if "drop_rows" in cleanup:
-        dr = cleanup["drop_rows"]
-        if _require_type("input_cleanup.drop_rows", dr, list, "a list", errors):
-            for i, rule in enumerate(dr):
-                p = f"input_cleanup.drop_rows[{i}]"
-                if not _require_type(p, rule, dict, "a mapping", errors):
-                    continue
-                _reject_unknown(p, rule, {"column", "regex"}, errors)
-                if "column" not in rule:
-                    errors.append(f"{p}.column: required")
-                else:
-                    _require_type(f"{p}.column", rule["column"], str, "a string", errors)
-                if "regex" in rule:
-                    _validate_regex(f"{p}.regex", rule["regex"], errors)
-
-    if "footer_detection_policy" in cleanup:
-        fdp = cleanup["footer_detection_policy"]
-        if _require_type("input_cleanup.footer_detection_policy", fdp, dict, "a mapping", errors):
-            _reject_unknown("input_cleanup.footer_detection_policy", fdp,
-                            {"prefer_disclaimer_markers", "do_not_use_as_markers", "intent", "notes"}, errors)
-            for key in ("prefer_disclaimer_markers", "do_not_use_as_markers", "notes"):
-                if key in fdp:
-                    _require_type(f"input_cleanup.footer_detection_policy.{key}", fdp[key], list, "a list", errors)
-
-
-def validate_contract(contract: dict) -> list:
-    """Return a list of human-readable problems with the contract (empty == valid).
-
-    Checks the behavior-bearing subtrees only — a malformed contract aborts the
-    run rather than silently degrading to default behavior. See section comment.
-    """
-    errors: list = []
-    if not isinstance(contract, dict):
-        return ["contract: top level must be a mapping"]
-
-    _reject_unknown("(top level)", contract,
-                    {"contract", "changelog", "task", "input", "validation", "output", "constraints", "input_cleanup"},
-                    errors)
-
-    meta = contract.get("contract")
-    if not isinstance(meta, dict):
-        errors.append("contract: required mapping is missing")
-    elif not meta.get("version"):
-        errors.append("contract.version: required")
-
-    if "input_cleanup" in contract:
-        _validate_input_cleanup(contract["input_cleanup"], errors)
-
-    if "output" in contract:
-        output = contract["output"]
-        if _require_type("output", output, dict, "a mapping", errors):
-            _reject_unknown("output", output, {"markdown"}, errors)
-            if "markdown" in output:
-                md = output["markdown"]
-                if _require_type("output.markdown", md, dict, "a mapping", errors):
-                    _reject_unknown("output.markdown", md,
-                                    {"include_all_columns", "preserve_column_order", "preserve_string_values",
-                                     "purpose", "sections", "summary_header", "section_header", "filename_policy"},
-                                    errors)
-                    _validate_sections(md.get("sections"), errors)
-                    _validate_summary_header(md.get("summary_header"), errors)
-                    _validate_section_header(md.get("section_header"), errors)
-                    if "filename_policy" in md:
-                        # Descriptive only — the output filename is code-driven.
-                        _require_type("output.markdown.filename_policy", md["filename_policy"], dict, "a mapping", errors)
-
-    return errors
+CONTRACT = Contract(
+    # Fidelity's "My View" export lowercases the second word of the account
+    # columns vs. the "Positions" export. Normalize to the canonical names the
+    # required-column check expects.
+    column_aliases={
+        "Account number": "Account Number",
+        "Account name": "Account Name",
+    },
+    drop_columns=(),
+    drop_rows=(DropRow(column="Account Number", regex="Date downloaded"),),
+    footer_markers=(
+        "the data and information in this spreadsheet",
+        "brokerage services are provided by fidelity brokerage",
+        "for informational purposes only",
+        "fidelity.com",
+    ),
+    group_by="Account Number",
+    heading_template="{Account Name} ({Account Number})",
+    summary_header=True,
+    as_of_pattern=r"Date downloaded\s+(.+)",
+    portfolio_totals=(Total(label="Total Current Value", column="Current value"),),
+    account_index=True,
+    account_index_label="Accounts",
+    account_index_column="Current value",
+    section_header=True,
+    section_totals=(Total(label="Total Current Value", column="Current value"),),
+)
 
 
 # ================================
@@ -430,18 +315,15 @@ class ConvertResult:
     cols: int
     position_pairs: Counter
     size: str
-    contract_name: str
-    contract_version: str
+    version: str
     dry_run: bool
 
 
-def _load_and_clean(csv_path: Path, contract: dict) -> tuple[pd.DataFrame, str | None, Counter]:
+def _load_and_clean(csv_path: Path, contract: Contract) -> tuple[pd.DataFrame, str | None, Counter]:
     """Read, alias, extract as_of, drop rows/columns, strip footers, and verify
     column/required-column integrity. Returns (cleaned df, as_of, raw position
     pairs captured before cleanup for loss detection).
     """
-    cleanup = contract.get("input_cleanup", {})
-
     # keep_default_na=False: empty cells stay empty strings rather than float
     # NaN. Without it, blank source cells render as the literal "nan" in the
     # markdown — a string-preservation violation that injects a phantom value
@@ -471,9 +353,8 @@ def _load_and_clean(csv_path: Path, contract: dict) -> tuple[pd.DataFrame, str |
                          keep_default_na=False)
 
     # Apply column aliases before anything else
-    aliases = cleanup.get("column_aliases") or {}
-    if aliases:
-        df = df.rename(columns=aliases)
+    if contract.column_aliases:
+        df = df.rename(columns=contract.column_aliases)
 
     aliased_columns = list(df.columns)
 
@@ -484,24 +365,19 @@ def _load_and_clean(csv_path: Path, contract: dict) -> tuple[pd.DataFrame, str |
 
     # Extract "As of" timestamp BEFORE drop_rows strips it. The Fidelity
     # "Date downloaded ..." footer is otherwise lost to cleanup.
-    header_cfg = _portfolio_header_cfg(contract)
     as_of: str | None = None
-    if header_cfg.get("enabled", False):
-        as_of_pattern = (header_cfg.get("as_of") or {}).get("pattern")
-        if as_of_pattern:
-            as_of = _extract_as_of(df, as_of_pattern)
+    if contract.summary_header and contract.as_of_pattern:
+        as_of = _extract_as_of(df, contract.as_of_pattern)
 
     # Drop rows per contract
-    for rule in cleanup.get("drop_rows", []):
-        col, regex = rule.get("column"), rule.get("regex")
-        if col not in df.columns:
-            print(f"WARNING: drop_rows column '{col}' not in CSV — skipped", file=sys.stderr)
+    for rule in contract.drop_rows:
+        if rule.column not in df.columns:
+            print(f"WARNING: drop_rows column '{rule.column}' not in CSV — skipped", file=sys.stderr)
             continue
-        if regex:
-            df = df[~df[col].str.match(regex, na=False)]
+        df = df[~df[rule.column].str.match(rule.regex, na=False)]
 
     # Drop columns per contract
-    drop_cols = cleanup.get("drop_columns") or []
+    drop_cols = contract.drop_columns
     for col in drop_cols:
         if col in df.columns:
             df = df.drop(columns=[col])
@@ -511,9 +387,8 @@ def _load_and_clean(csv_path: Path, contract: dict) -> tuple[pd.DataFrame, str |
     # Footer/disclaimer removal (skip on empty df: agg+axis=1 on zero rows
     # returns a DataFrame instead of a Series in pandas 3.x and crashes the
     # .str accessor)
-    markers = cleanup.get("footer_detection_policy", {}).get("prefer_disclaimer_markers", [])
-    if markers and not df.empty:
-        markers_lc = [m.lower() for m in markers if isinstance(m, str) and m.strip()]
+    if contract.footer_markers and not df.empty:
+        markers_lc = [m.lower() for m in contract.footer_markers if m.strip()]
         if markers_lc:
             row_text = df.fillna("").agg(" | ".join, axis=1).str.lower()
             pattern = "|".join(re.escape(m) for m in markers_lc)
@@ -535,7 +410,7 @@ def _load_and_clean(csv_path: Path, contract: dict) -> tuple[pd.DataFrame, str |
     return df, as_of, raw_position_pairs
 
 
-def _render_section(df_account: pd.DataFrame, contract: dict) -> tuple[str, AccountSection]:
+def _render_section(df_account: pd.DataFrame, contract: Contract) -> tuple[str, AccountSection]:
     """Validate one account group and render its markdown section. Fail-fast:
     any invalid account aborts the whole file."""
     acct_name_raw = norm_str(df_account["Account Name"].iloc[0])
@@ -552,13 +427,11 @@ def _render_section(df_account: pd.DataFrame, contract: dict) -> tuple[str, Acco
     if not position_pairs:
         raise AssertionError(f"FAIL no valid symbol/value pairs for account {acct_num_raw}")
 
-    heading_template = _sections_cfg(contract).get("heading_template") or "{Account Name} ({Account Number})"
-    heading = _format_heading(heading_template, df_account.iloc[0])
+    heading = _format_heading(contract.heading_template, df_account.iloc[0])
 
-    section_cfg = _section_header_cfg(contract)
     totals: list[tuple[str, str]] = []
-    if section_cfg.get("enabled", False):
-        totals = _compute_totals(df_account, section_cfg.get("totals"))
+    if contract.section_header:
+        totals = _compute_totals(df_account, contract.section_totals)
 
     # disable_numparse: tabulate otherwise reformats numeric-looking strings
     # ("1.50" -> "1.5", "0.000" -> "0") — a string-preservation violation.
@@ -584,24 +457,16 @@ def _render_section(df_account: pd.DataFrame, contract: dict) -> tuple[str, Acco
     return "\n".join(lines), section
 
 
-def convert_csv(csv_path: Path, contract: dict, out_dir: Path, dry_run: bool) -> ConvertResult:
+def convert_csv(csv_path: Path, out_dir: Path, dry_run: bool, contract: Contract = CONTRACT) -> ConvertResult:
     """
     Convert one CSV to a sectioned markdown file (one section per account).
     Raises on failure. Does not print anything.
     """
-    contract_meta = contract.get("contract", {})
-    contract_version = contract_meta.get("version", "unknown")
-    contract_name = contract_meta.get("name", "unknown")
-
     df, as_of, raw_position_pairs = _load_and_clean(csv_path, contract)
 
-    header_cfg = _portfolio_header_cfg(contract)
-    header_enabled = bool(header_cfg.get("enabled", False))
-    index_cfg = header_cfg.get("account_index") or {}
-    index_enabled = header_enabled and bool(index_cfg.get("enabled", False))
-    index_total_col = index_cfg.get("total_column")
-
-    group_by = _sections_cfg(contract).get("group_by") or "Account Number"
+    header_enabled = contract.summary_header
+    index_enabled = header_enabled and contract.account_index
+    index_total_col = contract.account_index_column
 
     # Group by account, preserving first-seen order (sort=False).
     sections_md: list[str] = []
@@ -609,7 +474,7 @@ def convert_csv(csv_path: Path, contract: dict, out_dir: Path, dry_run: bool) ->
     combined_pairs: Counter = Counter()
     index_lines: list[str] = []
 
-    for _, group in df.groupby(group_by, sort=False):
+    for _, group in df.groupby(contract.group_by, sort=False):
         section_md, section = _render_section(group, contract)
         sections_md.append(section_md)
         accounts.append(section)
@@ -634,7 +499,7 @@ def convert_csv(csv_path: Path, contract: dict, out_dir: Path, dry_run: bool) ->
     portfolio_totals: list[tuple[str, str]] = []
     header_lines: list[str] = []
     if header_enabled:
-        portfolio_totals = _compute_totals(df, header_cfg.get("totals"))
+        portfolio_totals = _compute_totals(df, contract.portfolio_totals)
         if as_of:
             header_lines.append(f"**As of:** {as_of}")
         for label, value in portfolio_totals:
@@ -642,7 +507,7 @@ def convert_csv(csv_path: Path, contract: dict, out_dir: Path, dry_run: bool) ->
         if index_enabled and index_lines:
             if header_lines:
                 header_lines.append("")
-            header_lines.append(f"**{index_cfg.get('label', 'Accounts')}:**")
+            header_lines.append(f"**{contract.account_index_label}:**")
             header_lines.extend(index_lines)
 
     # ---- Compose ----
@@ -672,8 +537,7 @@ def convert_csv(csv_path: Path, contract: dict, out_dir: Path, dry_run: bool) ->
         cols=len(df.columns),
         position_pairs=combined_pairs,
         size=size,
-        contract_name=contract_name,
-        contract_version=contract_version,
+        version=__version__,
         dry_run=dry_run,
     )
 
@@ -685,7 +549,7 @@ def convert_csv(csv_path: Path, contract: dict, out_dir: Path, dry_run: bool) ->
 def print_result_verbose(r: ConvertResult) -> None:
     print(f"=== {r.out_path.name} ===")
     print(f"accounts  {len(r.accounts)}  rows  {r.rows}  cols  {r.cols}  size  {r.size}")
-    print(f"contract  {r.contract_name} v{r.contract_version}")
+    print(f"version   {r.version}")
     if r.as_of:
         print(f"as of     {r.as_of}")
     for label, value in r.portfolio_totals:
@@ -721,8 +585,8 @@ class _FormattedArgumentParser(argparse.ArgumentParser):
         prog = self.prog
         sys.stderr.write(f"\nERROR: {message}\n\n")
         sys.stderr.write("Usage:\n")
-        sys.stderr.write(f"  {prog} --csv FILE --contract YAML [options]\n")
-        sys.stderr.write(f"  {prog} --csvdir DIR --contract YAML [options]\n\n")
+        sys.stderr.write(f"  {prog} --csv FILE [options]\n")
+        sys.stderr.write(f"  {prog} --csvdir DIR [options]\n\n")
         sys.stderr.write(f"Run '{prog} --help' for the full option list.\n")
         sys.exit(2)
 
@@ -734,7 +598,6 @@ def main():
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--csv", help="Single input Fidelity positions CSV")
     source.add_argument("--csvdir", help="Directory of CSVs to process in batch")
-    parser.add_argument("--contract", required=True, help="YAML contract path")
     parser.add_argument("--outdir", help="Output directory (default: alongside each input file)")
     parser.add_argument("--dry-run", action="store_true", help="Validate without writing output")
     output_mode = parser.add_mutually_exclusive_group()
@@ -742,21 +605,6 @@ def main():
     output_mode.add_argument("--quiet", action="store_true", help="Suppress all output except errors")
 
     args = parser.parse_args()
-
-    contract_path = Path(args.contract).expanduser().resolve()
-    if not contract_path.exists():
-        print(f"ERROR: contract not found: {contract_path}", file=sys.stderr)
-        sys.exit(1)
-
-    with open(contract_path, "r", encoding="utf-8") as f:
-        contract = yaml.safe_load(f) or {}
-
-    schema_errors = validate_contract(contract)
-    if schema_errors:
-        print(f"ERROR: malformed contract {contract_path}:", file=sys.stderr)
-        for problem in schema_errors:
-            print(f"  - {problem}", file=sys.stderr)
-        sys.exit(1)
 
     # Build file list
     if args.csv:
@@ -794,7 +642,7 @@ def main():
             sys.stdout.flush()
 
         try:
-            result = convert_csv(csv_path, contract, out_dir, args.dry_run)
+            result = convert_csv(csv_path, out_dir, args.dry_run)
 
             if args.quiet:
                 pass

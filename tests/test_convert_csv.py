@@ -1,11 +1,13 @@
+from dataclasses import replace
+
 import pandas as pd
 import pytest
 
-from fidelity_csv_to_markdown import AccountSection, ConvertResult, convert_csv
+from fidelity_csv_to_markdown import AccountSection, ConvertResult, Total, convert_csv
 
 
 def test_happy_path_dry_run(fixture_csv_path, contract, tmp_path):
-    result = convert_csv(fixture_csv_path, contract, tmp_path, dry_run=True)
+    result = convert_csv(fixture_csv_path, tmp_path, dry_run=True, contract=contract)
 
     assert isinstance(result, ConvertResult)
     assert len(result.accounts) == 1
@@ -20,7 +22,7 @@ def test_happy_path_dry_run(fixture_csv_path, contract, tmp_path):
 
 
 def test_happy_path_writes_file(fixture_csv_path, contract, tmp_path):
-    result = convert_csv(fixture_csv_path, contract, tmp_path, dry_run=False)
+    result = convert_csv(fixture_csv_path, tmp_path, dry_run=False, contract=contract)
 
     assert result.out_path.exists()
     # Filename now derives from the input CSV stem (not account_name__number).
@@ -36,7 +38,7 @@ def test_happy_path_writes_file(fixture_csv_path, contract, tmp_path):
 
 
 def test_summary_header_emitted(fixture_csv_path, contract, tmp_path):
-    result = convert_csv(fixture_csv_path, contract, tmp_path, dry_run=False)
+    result = convert_csv(fixture_csv_path, tmp_path, dry_run=False, contract=contract)
     body = result.out_path.read_text(encoding="utf-8")
 
     # As-of timestamp extracted from the dropped "Date downloaded ..." footer.
@@ -50,24 +52,14 @@ def test_summary_header_emitted(fixture_csv_path, contract, tmp_path):
 
 
 def test_convert_result_exposes_as_of_and_totals(fixture_csv_path, contract, tmp_path):
-    result = convert_csv(fixture_csv_path, contract, tmp_path, dry_run=True)
+    result = convert_csv(fixture_csv_path, tmp_path, dry_run=True, contract=contract)
     assert result.as_of == "Apr-03-2026 12:01 p.m ET"
     assert result.portfolio_totals == [("Total Current Value", "$100,000.00")]
 
 
 def test_headers_disabled(fixture_csv_path, contract, tmp_path):
-    disabled = {
-        **contract,
-        "output": {
-            **contract.get("output", {}),
-            "markdown": {
-                **contract.get("output", {}).get("markdown", {}),
-                "summary_header": {"enabled": False},
-                "section_header": {"enabled": False},
-            },
-        },
-    }
-    result = convert_csv(fixture_csv_path, disabled, tmp_path, dry_run=False)
+    disabled = replace(contract, summary_header=False, section_header=False)
+    result = convert_csv(fixture_csv_path, tmp_path, dry_run=False, contract=disabled)
     body = result.out_path.read_text(encoding="utf-8")
 
     assert "**As of:**" not in body
@@ -79,28 +71,15 @@ def test_headers_disabled(fixture_csv_path, contract, tmp_path):
 
 
 def test_summary_header_missing_totals_column_skipped(fixture_csv_path, contract, tmp_path):
-    bogus = {
-        **contract,
-        "output": {
-            **contract.get("output", {}),
-            "markdown": {
-                **contract.get("output", {}).get("markdown", {}),
-                "summary_header": {
-                    "enabled": True,
-                    "as_of": {"pattern": r"Date downloaded\s+(.+)"},
-                    "totals": [{"label": "Bogus", "column": "NotARealColumn"}],
-                },
-            },
-        },
-    }
-    result = convert_csv(fixture_csv_path, bogus, tmp_path, dry_run=True)
+    bogus = replace(contract, portfolio_totals=(Total(label="Bogus", column="NotARealColumn"),))
+    result = convert_csv(fixture_csv_path, tmp_path, dry_run=True, contract=bogus)
     # As-of still extracted; bogus portfolio total skipped, none emitted.
     assert result.as_of == "Apr-03-2026 12:01 p.m ET"
     assert result.portfolio_totals == []
 
 
 def test_vti_appears_twice_in_position_pairs(fixture_csv_path, contract, tmp_path):
-    result = convert_csv(fixture_csv_path, contract, tmp_path, dry_run=True)
+    result = convert_csv(fixture_csv_path, tmp_path, dry_run=True, contract=contract)
     vti_count = next(
         count for (sym, _), count in result.position_pairs.items() if sym == "VTI"
     )
@@ -110,7 +89,7 @@ def test_vti_appears_twice_in_position_pairs(fixture_csv_path, contract, tmp_pat
 # ---- Multi-account ----
 
 def test_multi_account_sections_emitted(multi_fixture_csv_path, contract, tmp_path):
-    result = convert_csv(multi_fixture_csv_path, contract, tmp_path, dry_run=False)
+    result = convert_csv(multi_fixture_csv_path, tmp_path, dry_run=False, contract=contract)
     body = result.out_path.read_text(encoding="utf-8")
 
     assert len(result.accounts) == 3
@@ -124,7 +103,7 @@ def test_multi_account_sections_emitted(multi_fixture_csv_path, contract, tmp_pa
 
 
 def test_per_account_subtotals(multi_fixture_csv_path, contract, tmp_path):
-    result = convert_csv(multi_fixture_csv_path, contract, tmp_path, dry_run=True)
+    result = convert_csv(multi_fixture_csv_path, tmp_path, dry_run=True, contract=contract)
     totals = {s.account_number: dict(s.totals) for s in result.accounts}
     assert totals["ACCT-AAA"]["Total Current Value"] == "$40,000.00"
     assert totals["ACCT-BBB"]["Total Current Value"] == "$50,000.00"
@@ -132,7 +111,7 @@ def test_per_account_subtotals(multi_fixture_csv_path, contract, tmp_path):
 
 
 def test_account_index_lists_all_accounts(multi_fixture_csv_path, contract, tmp_path):
-    result = convert_csv(multi_fixture_csv_path, contract, tmp_path, dry_run=False)
+    result = convert_csv(multi_fixture_csv_path, tmp_path, dry_run=False, contract=contract)
     body = result.out_path.read_text(encoding="utf-8")
     assert "**Accounts:**" in body
     assert "- Brokerage - TOD (ACCT-AAA): $40,000.00" in body
@@ -147,11 +126,11 @@ def test_one_bad_account_aborts(multi_fixture_df, contract, write_csv, tmp_path)
     csv = write_csv(df, "bad_account.csv")
 
     with pytest.raises(AssertionError, match="Account Name is empty for account ACCT-BBB"):
-        convert_csv(csv, contract, tmp_path, dry_run=True)
+        convert_csv(csv, tmp_path, dry_run=True, contract=contract)
 
 
 def test_empty_symbol_account_tolerated(multi_fixture_csv_path, contract, tmp_path):
-    result = convert_csv(multi_fixture_csv_path, contract, tmp_path, dry_run=False)
+    result = convert_csv(multi_fixture_csv_path, tmp_path, dry_run=False, contract=contract)
     body = result.out_path.read_text(encoding="utf-8")
     ccc = next(s for s in result.accounts if s.account_number == "ACCT-CCC")
     # The 401(k)-style holding has an empty Symbol but a Current value — it counts.
@@ -162,10 +141,10 @@ def test_empty_symbol_account_tolerated(multi_fixture_csv_path, contract, tmp_pa
 # ---- Validation (global checks) ----
 
 def test_collision_rejected(fixture_csv_path, contract, tmp_path):
-    convert_csv(fixture_csv_path, contract, tmp_path, dry_run=False)
+    convert_csv(fixture_csv_path, tmp_path, dry_run=False, contract=contract)
 
     with pytest.raises(AssertionError, match="output collision"):
-        convert_csv(fixture_csv_path, contract, tmp_path, dry_run=False)
+        convert_csv(fixture_csv_path, tmp_path, dry_run=False, contract=contract)
 
 
 def test_missing_required_column_rejected(fixture_df, contract, write_csv, tmp_path):
@@ -173,7 +152,7 @@ def test_missing_required_column_rejected(fixture_df, contract, write_csv, tmp_p
     csv = write_csv(df, "no_account_name.csv")
 
     with pytest.raises(AssertionError, match="required column missing: 'Account Name'"):
-        convert_csv(csv, contract, tmp_path, dry_run=True)
+        convert_csv(csv, tmp_path, dry_run=True, contract=contract)
 
 
 def test_missing_symbol_column_rejected(fixture_df, contract, write_csv, tmp_path):
@@ -181,7 +160,7 @@ def test_missing_symbol_column_rejected(fixture_df, contract, write_csv, tmp_pat
     csv = write_csv(df, "no_symbol.csv")
 
     with pytest.raises(AssertionError, match="required column missing: 'Symbol'"):
-        convert_csv(csv, contract, tmp_path, dry_run=True)
+        convert_csv(csv, tmp_path, dry_run=True, contract=contract)
 
 
 def test_empty_after_cleanup(fixture_df, contract, write_csv, tmp_path):
@@ -191,7 +170,7 @@ def test_empty_after_cleanup(fixture_df, contract, write_csv, tmp_path):
     csv = write_csv(df, "all_dropped.csv")
 
     with pytest.raises(AssertionError, match="no rows after cleanup"):
-        convert_csv(csv, contract, tmp_path, dry_run=True)
+        convert_csv(csv, tmp_path, dry_run=True, contract=contract)
 
 
 def test_positions_lost_during_cleanup(fixture_df, contract, write_csv, tmp_path):
@@ -201,35 +180,23 @@ def test_positions_lost_during_cleanup(fixture_df, contract, write_csv, tmp_path
     csv = write_csv(df, "position_lost.csv")
 
     with pytest.raises(AssertionError, match="positions lost during cleanup"):
-        convert_csv(csv, contract, tmp_path, dry_run=True)
+        convert_csv(csv, tmp_path, dry_run=True, contract=contract)
 
 
 def test_column_aliases_applied(fixture_df, contract, write_csv, tmp_path):
     df = fixture_df.rename(columns={"Symbol": "Ticker"})
     csv = write_csv(df, "aliased.csv")
 
-    aliased_contract = {
-        **contract,
-        "input_cleanup": {
-            **contract["input_cleanup"],
-            "column_aliases": {"Ticker": "Symbol"},
-        },
-    }
+    aliased_contract = replace(contract, column_aliases={"Ticker": "Symbol"})
 
-    result = convert_csv(csv, aliased_contract, tmp_path, dry_run=True)
+    result = convert_csv(csv, tmp_path, dry_run=True, contract=aliased_contract)
     assert result.accounts[0].positions == 5
 
 
 def test_drop_columns_removes_columns(fixture_csv_path, contract, tmp_path):
-    dropped_contract = {
-        **contract,
-        "input_cleanup": {
-            **contract["input_cleanup"],
-            "drop_columns": ["Sector", "Industry"],
-        },
-    }
+    dropped_contract = replace(contract, drop_columns=("Sector", "Industry"))
 
-    result = convert_csv(fixture_csv_path, dropped_contract, tmp_path, dry_run=False)
+    result = convert_csv(fixture_csv_path, tmp_path, dry_run=False, contract=dropped_contract)
     body = result.out_path.read_text(encoding="utf-8")
     header_line = next(line for line in body.splitlines() if line.startswith("|"))
     headers = [h.strip() for h in header_line.strip("|").split("|")]
@@ -246,7 +213,7 @@ def test_numeric_strings_preserved_verbatim(fixture_df, contract, write_csv, tmp
     df.loc[1, "Quantity"] = "0.000"
     csv = write_csv(df, "numeric_strings.csv")
 
-    result = convert_csv(csv, contract, tmp_path, dry_run=False)
+    result = convert_csv(csv, tmp_path, dry_run=False, contract=contract)
     cells = [c.strip() for line in result.out_path.read_text(encoding="utf-8").splitlines()
              if line.startswith("|") for c in line.strip("|").split("|")]
     assert "1.50" in cells
