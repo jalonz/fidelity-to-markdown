@@ -28,6 +28,7 @@ build/
 !README.md
 !CLAUDE.md
 !TODO.md
+!CHANGELOG.md
 !tests/fixtures/*.csv
 
 # Secrets (never commit)

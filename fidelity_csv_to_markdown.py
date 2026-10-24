@@ -2,92 +2,11 @@
 """
 fidelity_csv_to_markdown
 
-Version: 3.0.0
-Date: 2026-06-06
-
-Changelog:
-- v3.0.0 (2026-06-06)
-  - Multi-account: a CSV is now grouped by Account Number and rendered as one
-    markdown file with a "## <Account Name> (<Account Number>)" section per
-    account. A single-account export is simply the N=1 case — there is one
-    uniform code path. This REVERSES v2.2.0's multi-account rejection: an
-    "All Accounts" Fidelity export is now consumed directly rather than aborted.
-  - Output filename now derives from the input CSV stem (e.g.
-    Portfolio_Positions_Jun-06-2026.md), for every account count. The previous
-    "<account_name>__<account_number>.md" naming is retired. (Breaking change.)
-  - Header redesign: the file opens with an always-emitted portfolio header —
-    "**As of:**", a portfolio "**Total Current Value:**" (sum of Current value
-    across ALL accounts), and an account index listing each account with its
-    subtotal — followed by per-account sections, each carrying its own subtotal.
-    All sums are plain single-column aggregations (CLAUDE.md carve-out); no
-    ratios or percentages-of-portfolio. Driven by the contract's
-    output.markdown.summary_header (portfolio), .section_header (per account),
-    .sections (grouping), and .account_index blocks.
-  - Positions-loss detection now runs across all accounts (global Counter).
-    convert_csv returns a reshaped ConvertResult: per-account AccountSection
-    records plus portfolio-level as_of/portfolio_totals.
-  - Removed the now-unused normalize_account_name / normalize_account_number
-    filename helpers.
-  - Validate the contract at load time (validate_contract): unknown keys, wrong
-    types, and uncompilable regexes in the behavior-bearing subtrees now abort
-    with a list of problems instead of silently degrading to default behavior.
-- v2.3.0 (2026-05-21)
-  - Emit a contract-driven summary header above the markdown table: an
-    "**As of:** <timestamp>" line extracted from the Fidelity "Date downloaded"
-    footer, plus one "**<label>:** $X,XXX.XX" line per configured total
-    (default: Total Current Value). Driven by output.markdown.summary_header
-    in the YAML contract; set enabled: false to suppress. Summing one column
-    verbatim is treated as formatting under CLAUDE.md's aggregation carve-out.
-  - ConvertResult gains as_of and totals fields; --verbose prints both.
-- v2.2.0 (2026-05-20)
-  - Reject multi-account CSVs: abort with a clear error if a single CSV
-    contains positions for more than one Account Number (previously mis-labeled
-    the output from row 0). [Reversed in v3.0.0.]
-  - Reject output filename collisions: abort if the computed output path
-    already exists (previously silently overwrote).
-  - --verbose and --quiet are now mutually exclusive at argparse level (was a
-    silent override of --verbose by --quiet).
-  - --csvdir glob is case-insensitive: matches Positions.CSV / Export.Csv.
-  - Reformatted argparse error output: blank-line-separated ERROR + two-line
-    usage hint + pointer to --help. --help output is unchanged.
-  - Standardized validation failures on AssertionError; required-column checks
-    previously raised KeyError.
-  - convert_csv now returns a ConvertResult dataclass instead of a dict.
-  - Internal: _position_pairs helper hoists per-row norm_str calls; _bar no
-    longer renders a stray '>' on the empty first frame; assorted no-op
-    cleanups (dead A-Z in normalize_account_number, redundant .astype(str)
-    calls, unused prefix parameter on print helpers).
-- v2.1.0 (2026-04-18)
-  - Output modes redesigned: default is brief one-line summary; --verbose for
-    full detail block; --quiet suppresses all stdout (errors only on stderr).
-  - Animated progress bar in default batch mode (was --quiet).
-- v2.0.0 (2026-04-18)
-  - Add --csvdir for batch mode: process all CSVs in a directory.
-  - Add --dry-run: validate and report without writing files.
-  - Add --quiet: one-line summary per file; animated progress bar in batch.
-  - Progress display in batch mode: [n/total] prefix in verbose mode.
-  - Cleaner verification output with named check results.
-  - Verification failures now report the specific check that failed.
-  - Contract: support drop_columns list in input_cleanup.
-  - Contract: support column_aliases map in input_cleanup.
-- v1.1.0 (2026-03-26)
-  - Guard against df.to_markdown() returning None; raise AssertionError on empty output.
-  - Save pre-cleanup position pairs and diff against post-cleanup to catch positions
-    silently dropped by footer or drop_rows rules.
-  - Warn to stderr when a contract drop rule references a column absent from the CSV.
-- v1.0.0 (2026-03-26)
-  - Derived from fidelity_csv_to_parquet v1.1.3.
-  - Replaced Parquet output with a single markdown table.
-  - Removed lossless/optimized layer concept; all original columns preserved as-is.
-  - Removed companion column derivation (__usd, __pct) and pyarrow dependency.
-  - Verification moved to pre-write in-memory checks against the cleaned DataFrame.
-
-Description:
-Converts Fidelity positions CSV exports into markdown using a YAML contract for
-cleanup, validation, and output policy. The CSV is grouped by Account Number and
-rendered as one file with a portfolio header followed by a section per account.
-All original columns and string values are preserved without modification
-(unless drop_columns is specified in the contract).
+Converts Fidelity "Positions" CSV exports into LLM-ready markdown. The CSV is
+grouped by Account Number and rendered as one file with a portfolio header
+followed by a section per account. All original columns and string values are
+preserved verbatim (unless CONTRACT.drop_columns says otherwise). Cleanup and
+output policy live in the inline CONTRACT below. History is in CHANGELOG.md.
 """
 
 import argparse
@@ -157,33 +76,29 @@ def _format_usd(amount: float) -> str:
 def _extract_as_of(df: pd.DataFrame, pattern: str) -> str | None:
     """Search every cell for the regex; return the first capture group's match."""
     compiled = re.compile(pattern, re.IGNORECASE)
-    for col in df.columns:
-        series = df[col].dropna().astype(str)
-        for val in series:
-            m = compiled.search(val)
-            if m:
-                return (m.group(1) if m.groups() else m.group(0)).strip()
+    # Column-major, positional: header names may repeat, so df[col] is unsafe.
+    for val in df.to_numpy().ravel(order="F"):
+        m = compiled.search(val)
+        if m:
+            return (m.group(1) if m.groups() else m.group(0)).strip()
     return None
 
 
-def _compute_totals(df: pd.DataFrame, totals_cfg: "tuple[Total, ...]") -> list[tuple[str, str]]:
-    """Sum each configured column verbatim and format as USD.
+def _sum_column(df: pd.DataFrame, col: str) -> str | None:
+    """Sum one column verbatim and format as USD — plain pass-through
+    aggregation (CLAUDE.md carve-out). Unparseable cells ('--', blank) are
+    skipped; returns None if the column is absent or nothing parses."""
+    if col not in df.columns:
+        print(f"WARNING: totals column '{col}' not in CSV — skipped", file=sys.stderr)
+        return None
+    values = [v for v in (_parse_currency(x) for x in df[col]) if v is not None]
+    return _format_usd(sum(values)) if values else None
 
-    Plain pass-through aggregation (CLAUDE.md carve-out) — one column summed,
-    no ratios or derived values. Unparseable cells ('--', blank) are skipped; a
-    missing column logs a warning and yields no line.
-    """
-    totals: list[tuple[str, str]] = []
-    for entry in totals_cfg:
-        label, col = entry.label, entry.column
-        if col not in df.columns:
-            print(f"WARNING: totals column '{col}' not in CSV — skipped", file=sys.stderr)
-            continue
-        parsed_values = [v for v in (_parse_currency(x) for x in df[col]) if v is not None]
-        if not parsed_values:
-            continue
-        totals.append((label, _format_usd(sum(parsed_values))))
-    return totals
+
+def _compute_totals(df: pd.DataFrame, totals: "tuple[Total, ...]") -> list[tuple[str, str]]:
+    """One (label, $amount) pair per configured Total that yields a value."""
+    pairs = [(t.label, _sum_column(df, t.column)) for t in totals]
+    return [(label, value) for label, value in pairs if value is not None]
 
 
 def _format_heading(template: str, row: pd.Series) -> str:
@@ -324,39 +239,19 @@ def _load_and_clean(csv_path: Path, contract: Contract) -> tuple[pd.DataFrame, s
     column/required-column integrity. Returns (cleaned df, as_of, raw position
     pairs captured before cleanup for loss detection).
     """
-    # keep_default_na=False: empty cells stay empty strings rather than float
-    # NaN. Without it, blank source cells render as the literal "nan" in the
-    # markdown — a string-preservation violation that injects a phantom value
-    # (see CLAUDE.md "String preservation is intentional"). Fidelity uses "--"
-    # for N/A (already a literal string) and blank for empty; nothing in the
-    # data relies on NaN coercion.
-    #
-    # Fidelity occasionally emits a trailing comma on every data row, giving
-    # data rows one more field than the header. Detect and strip the surplus
-    # trailing fields before pandas sees the data so it never raises a
-    # ParserWarning. Uses csv.reader to handle quoted cells correctly, then
-    # writes a normalised in-memory CSV for pandas to consume.
-    with open(csv_path, encoding="utf-8-sig", newline="") as _f:
-        _rows = list(csv.reader(_f))
-    _header_len = len(_rows[0]) if _rows else 0
-    _n_max = max((len(r) for r in _rows if r), default=_header_len)
-    if _n_max > _header_len:
-        import io as _io
-        _buf = _io.StringIO()
-        _writer = csv.writer(_buf)
-        for _row in _rows:
-            _writer.writerow(_row[:_header_len])
-        _buf.seek(0)
-        df = pd.read_csv(_buf, dtype=str, index_col=False, keep_default_na=False)
-    else:
-        df = pd.read_csv(csv_path, dtype=str, index_col=False, encoding="utf-8-sig",
-                         keep_default_na=False)
+    # Read with csv.reader and build the frame directly so every cell is a str
+    # by construction — no dtype coercion and no NaN (a blank source cell would
+    # otherwise render as a phantom "nan"; see CLAUDE.md "String preservation").
+    # Rows are padded or truncated to the header width: Fidelity's footer rows
+    # are short, and some exports put a trailing comma on every data row.
+    with open(csv_path, encoding="utf-8-sig", newline="") as f:
+        header, *rows = list(csv.reader(f)) or [[]]
+    width = len(header)
+    df = pd.DataFrame([(r + [""] * width)[:width] for r in rows if r], columns=header)
 
     # Apply column aliases before anything else
     if contract.column_aliases:
         df = df.rename(columns=contract.column_aliases)
-
-    aliased_columns = list(df.columns)
 
     # Baseline position pairs for loss detection
     raw_position_pairs: Counter = Counter()
@@ -377,8 +272,7 @@ def _load_and_clean(csv_path: Path, contract: Contract) -> tuple[pd.DataFrame, s
         df = df[~df[rule.column].str.match(rule.regex, na=False)]
 
     # Drop columns per contract
-    drop_cols = contract.drop_columns
-    for col in drop_cols:
+    for col in contract.drop_columns:
         if col in df.columns:
             df = df.drop(columns=[col])
         else:
@@ -390,19 +284,19 @@ def _load_and_clean(csv_path: Path, contract: Contract) -> tuple[pd.DataFrame, s
     if contract.footer_markers and not df.empty:
         markers_lc = [m.lower() for m in contract.footer_markers if m.strip()]
         if markers_lc:
-            row_text = df.fillna("").agg(" | ".join, axis=1).str.lower()
+            row_text = df.agg(" | ".join, axis=1).str.lower()
             pattern = "|".join(re.escape(m) for m in markers_lc)
             df = df[~row_text.str.contains(pattern, regex=True, na=False)]
 
     # ---- Verification ----
-    expected_cols = [c for c in aliased_columns if c not in drop_cols]
-    missing = [c for c in expected_cols if c not in df.columns]
-    if missing:
-        raise AssertionError(f"FAIL columns unexpectedly dropped: {missing}")
-
+    # Header names are kept verbatim, so Fidelity's repeated summary block
+    # ("Total gain/loss $" twice, etc.) yields duplicate names. That's fine for
+    # pass-through columns; a duplicated required column would be ambiguous.
     for col in ("Account Name", "Account Number", "Symbol", "Current value"):
         if col not in df.columns:
             raise AssertionError(f"FAIL required column missing: '{col}'")
+        if list(df.columns).count(col) > 1:
+            raise AssertionError(f"FAIL required column duplicated: '{col}'")
 
     if len(df) == 0:
         raise AssertionError("FAIL no rows after cleanup — check drop rules and footer markers")
@@ -466,7 +360,6 @@ def convert_csv(csv_path: Path, out_dir: Path, dry_run: bool, contract: Contract
 
     header_enabled = contract.summary_header
     index_enabled = header_enabled and contract.account_index
-    index_total_col = contract.account_index_column
 
     # Group by account, preserving first-seen order (sort=False).
     sections_md: list[str] = []
@@ -481,11 +374,7 @@ def convert_csv(csv_path: Path, out_dir: Path, dry_run: bool, contract: Contract
         combined_pairs.update(section.position_pairs)
 
         if index_enabled:
-            total_str = ""
-            if index_total_col and index_total_col in group.columns:
-                vals = [v for v in (_parse_currency(x) for x in group[index_total_col]) if v is not None]
-                if vals:
-                    total_str = _format_usd(sum(vals))
+            total_str = _sum_column(group, contract.account_index_column)
             suffix = f": {total_str}" if total_str else ""
             index_lines.append(f"- {section.account_name} ({section.account_number}){suffix}")
 

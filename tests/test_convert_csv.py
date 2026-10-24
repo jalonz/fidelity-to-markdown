@@ -218,3 +218,44 @@ def test_numeric_strings_preserved_verbatim(fixture_df, contract, write_csv, tmp
              if line.startswith("|") for c in line.strip("|").split("|")]
     assert "1.50" in cells
     assert "0.000" in cells
+
+
+def _write_raw_csv(path, rows):
+    import csv as _csv
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        _csv.writer(f).writerows(rows)
+    return path
+
+
+def test_duplicate_headers_preserved_verbatim(tmp_path):
+    # Fidelity repeats some headers; they must not be mangled to "Change $.1".
+    path = _write_raw_csv(tmp_path / "dup.csv", [
+        ["Account Number", "Account Name", "Symbol", "Current value", "Change $", "Change $"],
+        ["X1", "Brokerage", "VTI", "$100.00", "+$1.00", "+$2.00"],
+    ])
+    result = convert_csv(path, tmp_path, dry_run=False)
+    header = next(l for l in result.out_path.read_text(encoding="utf-8").splitlines() if l.startswith("|"))
+    assert [h.strip() for h in header.strip("|").split("|")].count("Change $") == 2
+    assert "Change $.1" not in header
+
+
+def test_duplicated_required_column_rejected(tmp_path):
+    path = _write_raw_csv(tmp_path / "dup_required.csv", [
+        ["Account Number", "Account Name", "Symbol", "Current value", "Current value"],
+        ["X1", "Brokerage", "VTI", "$100.00", "$100.00"],
+    ])
+    with pytest.raises(AssertionError, match="required column duplicated: 'Current value'"):
+        convert_csv(path, tmp_path, dry_run=True)
+
+
+def test_trailing_comma_rows_and_short_footer_rows(tmp_path):
+    # Data rows one field wider than the header; footer rows a single field.
+    path = _write_raw_csv(tmp_path / "ragged.csv", [
+        ["Account Number", "Account Name", "Symbol", "Current value"],
+        ["X1", "Brokerage", "VTI", "$100.00", ""],
+        ["Date downloaded Apr-03-2026 12:01 p.m ET"],
+    ])
+    result = convert_csv(path, tmp_path, dry_run=True)
+    assert result.as_of == "Apr-03-2026 12:01 p.m ET"
+    assert result.rows == 1
+    assert result.cols == 4
