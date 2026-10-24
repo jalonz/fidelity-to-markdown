@@ -3,7 +3,7 @@ from dataclasses import FrozenInstanceError, asdict, replace
 
 import pytest
 
-from fidelity_csv_to_markdown import CONTRACT, Contract, DropRow
+from fidelity_csv_to_markdown import CONTRACT, Contract, DropRow, Total
 
 
 def test_mistyped_field_fails_loudly():
@@ -26,4 +26,26 @@ def test_invalid_as_of_pattern_fails_at_construction():
 
 def test_contract_is_immutable():
     with pytest.raises(FrozenInstanceError):
-        CONTRACT.group_by = "Symbol"
+        CONTRACT.heading_template = "{Symbol}"
+
+
+@pytest.mark.parametrize("field, value", [
+    ("drop_columns", ("Sector")),             # missing comma: a str, not a tuple
+    ("footer_markers", ("fidelity.com")),
+    ("portfolio_totals", (Total(label="X", column="Current value"))),
+    ("summary_header", "yes"),
+    ("column_aliases", [("a", "b")]),
+    ("as_of_pattern", 123),
+])
+def test_wrong_typed_field_fails_at_construction(field, value):
+    with pytest.raises(TypeError, match=f"Contract.{field}"):
+        replace(CONTRACT, **{field: value})
+
+
+def test_wrong_typed_nested_field_fails_at_construction():
+    with pytest.raises(TypeError, match="Total.column"):
+        Total(label="X", column=None)
+
+
+def test_as_of_pattern_none_allowed():
+    assert replace(CONTRACT, as_of_pattern=None).as_of_pattern is None

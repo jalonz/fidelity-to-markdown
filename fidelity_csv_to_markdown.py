@@ -16,14 +16,17 @@ output policy live in the inline CONTRACT below. History is in CHANGELOG.md.
 import argparse
 import csv
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
+from decimal import Decimal, InvalidOperation
 import re
 import sys
+import types
+from typing import get_args, get_origin
 from pathlib import Path
 
 import pandas as pd
 
-__version__ = "4.0.0"
+__version__ = "4.1.0"
 
 REQUIRED_COLUMNS = ("Account Name", "Account Number", "Symbol", "Current value")
 
@@ -56,24 +59,32 @@ def _size_str(path: Path) -> str:
     return f"{size / 1024:.1f}KB" if size >= 1024 else f"{size}B"
 
 
-def _parse_currency(val: object) -> float | None:
-    """Parse strings like '$1,234.56', '-$1,234.56', '($1,234.56)' to float. Returns None if unparseable or sentinel."""
+_SENTINELS = ("", "--")
+
+
+def _parse_currency(val: object) -> Decimal | None:
+    """Parse '$1,234.56', '-$1,234.56', '+$1.00', '($1,234.56)' exactly.
+    Returns None for the blank/'--' sentinels; raises ValueError otherwise."""
     s = norm_str(val)
-    if not s or s == "--":
+    if s in _SENTINELS:
         return None
-    negative = False
-    if s.startswith("(") and s.endswith(")"):
+    negative = s.startswith("(") and s.endswith(")")
+    if negative:
         s = s[1:-1]
-        negative = True
     s = s.replace("$", "").replace(",", "").strip()
     try:
-        v = float(s)
-    except ValueError:
-        return None
+        v = Decimal(s)
+    except InvalidOperation:
+        raise ValueError(f"unparseable currency value {val!r}") from None
+    if not v.is_finite():
+        raise ValueError(f"unparseable currency value {val!r}")
     return -v if negative else v
 
 
-def _format_usd(amount: float) -> str:
+def _format_usd(amount: Decimal) -> str:
+    amount = amount.quantize(Decimal("0.01"))
+    if amount == 0:
+        amount = Decimal("0.00")  # never print "-$0.00"
     if amount < 0:
         return f"-${-amount:,.2f}"
     return f"${amount:,.2f}"
@@ -113,6 +124,8 @@ def _verify_duplicate_columns(df: pd.DataFrame, removed: list[tuple[str, pd.Seri
     """Abort unless every removed copy matches its kept column on the rows that
     survived cleanup (so footer rows can't cause a spurious mismatch)."""
     for kept_name, copy in removed:
+        if kept_name not in df.columns:
+            continue  # removed on purpose by drop_columns; nothing to compare
         kept = df[kept_name].map(norm_str).to_numpy()
         dup = copy.loc[df.index].map(norm_str).to_numpy()
         mismatch = (kept != dup).nonzero()[0]
@@ -126,20 +139,58 @@ def _verify_duplicate_columns(df: pd.DataFrame, removed: list[tuple[str, pd.Seri
 
 
 def _sum_column(df: pd.DataFrame, col: str) -> str | None:
-    """Sum one column verbatim and format as USD — plain pass-through
-    aggregation (CLAUDE.md carve-out). Unparseable cells ('--', blank) are
-    skipped; returns None if the column is absent or nothing parses."""
+    """Sum one column exactly and format as USD — plain pass-through
+    aggregation (CLAUDE.md carve-out). Blank/'--' cells and anything
+    _warn_on_total_columns already reported are skipped; returns None if the
+    column is absent or nothing parses."""
     if col not in df.columns:
-        print(f"WARNING: totals column '{col}' not in CSV — skipped", file=sys.stderr)
         return None
-    values = [v for v in (_parse_currency(x) for x in df[col]) if v is not None]
+    values = []
+    for x in df[col]:
+        try:
+            v = _parse_currency(x)
+        except ValueError:
+            continue
+        if v is not None:
+            values.append(v)
     return _format_usd(sum(values)) if values else None
+
+
+def _warn_on_total_columns(df: pd.DataFrame, columns: set[str]) -> None:
+    """Warn once per totals column that is missing or has cells that are
+    neither a currency value nor a blank/'--' sentinel — those are left out of
+    every total, so the reader must be told."""
+    for col in sorted(columns):
+        if col not in df.columns:
+            print(f"WARNING: totals column '{col}' not in CSV — skipped", file=sys.stderr)
+            continue
+        bad = []
+        for x in df[col]:
+            try:
+                _parse_currency(x)
+            except ValueError:
+                bad.append(norm_str(x))
+        if bad:
+            print(f"WARNING: {len(bad)} unparseable cell(s) in '{col}' left out of totals: "
+                  + ", ".join(repr(b) for b in bad[:5]), file=sys.stderr)
 
 
 def _compute_totals(df: pd.DataFrame, totals: "tuple[Total, ...]") -> list[tuple[str, str]]:
     """One (label, $amount) pair per configured Total that yields a value."""
     pairs = [(t.label, _sum_column(df, t.column)) for t in totals]
     return [(label, value) for label, value in pairs if value is not None]
+
+
+def _md_cell(val: str) -> str:
+    # The only edit ever made to a value: a literal "|" or line break would
+    # split the markdown table, so "|" is escaped and line breaks become spaces.
+    return re.sub(r"\r\n|\r|\n", " ", val).replace("|", r"\|")
+
+
+def _markdown_safe(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.map(_md_cell)
+    out.columns = [_md_cell(c) for c in df.columns]
+    return out
 
 
 def _format_heading(template: str, row: pd.Series) -> str:
@@ -153,14 +204,45 @@ def _format_heading(template: str, row: pd.Series) -> str:
 # ================================
 # Contract
 # ================================
+
+def _check_type(path: str, value: object, tp: object) -> None:
+    """Raise TypeError unless value matches the annotation tp. Handles the
+    shapes the contract uses: plain classes, X | None, tuple[X, ...], and
+    dict[K, V]. Catches the missing-comma typo ("a") vs ("a",)."""
+    origin = get_origin(tp)
+    if origin is tuple:
+        if not isinstance(value, tuple):
+            raise TypeError(f"{path} must be a tuple, got {type(value).__name__} {value!r}"
+                            " (a one-element tuple needs a trailing comma)")
+        for i, item in enumerate(value):
+            _check_type(f"{path}[{i}]", item, get_args(tp)[0])
+    elif origin is dict:
+        if not isinstance(value, dict):
+            raise TypeError(f"{path} must be a dict, got {type(value).__name__} {value!r}")
+        key_tp, val_tp = get_args(tp)
+        for k, v in value.items():
+            _check_type(f"{path} key {k!r}", k, key_tp)
+            _check_type(f"{path}[{k!r}]", v, val_tp)
+    elif origin is types.UnionType:
+        if not isinstance(value, get_args(tp)):
+            raise TypeError(f"{path} must be {tp}, got {type(value).__name__} {value!r}")
+    elif not isinstance(value, tp):
+        raise TypeError(f"{path} must be {tp.__name__}, got {type(value).__name__} {value!r}")
+
+
+def _check_fields(obj: object) -> None:
+    for f in fields(obj):
+        _check_type(f"{type(obj).__name__}.{f.name}", getattr(obj, f.name), f.type)
+
 #
 # The contract is the declarative policy for this script: cleanup rules, footer
 # detection, sectioning, and which single-column sums to emit. It lives here as
 # a frozen dataclass rather than an external file so it is versioned, shipped,
-# and invoked together with the code that reads it. A mistyped field name fails
-# at import (TypeError) and an invalid regex fails at import (re.error) — no
-# separate schema checker needed. To adapt to a new Fidelity layout, edit
-# CONTRACT below; the conversion logic should not need to change.
+# and invoked together with the code that reads it. A mistyped field name or a
+# wrong-typed value fails at import (TypeError) and an invalid regex fails at
+# import (re.error) — no separate schema checker needed. To adapt to a new
+# Fidelity layout, edit CONTRACT below; the conversion logic should not need to
+# change.
 
 @dataclass(frozen=True)
 class Total:
@@ -168,11 +250,18 @@ class Total:
     label: str
     column: str
 
+    def __post_init__(self) -> None:
+        _check_fields(self)
+
 
 @dataclass(frozen=True)
 class DropRow:
     column: str
     regex: str
+
+    def __post_init__(self) -> None:
+        _check_fields(self)
+        re.compile(self.regex)
 
 
 @dataclass(frozen=True)
@@ -193,9 +282,9 @@ class Contract:
     drop_duplicate_columns: bool
 
     # ---- sections ----
-    # Column the file is split on; account order is first-seen (no sorting).
-    group_by: str
-    # Each section's H2 heading, filled from that account's first row.
+    # Rows are always grouped by Account Number (a required column), in
+    # first-seen order. Each section's H2 heading — and its account-index
+    # line — is filled from that account's first row.
     heading_template: str
 
     # ---- portfolio header (top of file) ----
@@ -205,7 +294,7 @@ class Contract:
     as_of_pattern: str | None
     # Each sums one column across ALL accounts.
     portfolio_totals: tuple[Total, ...]
-    # One "- <name> (<number>): $X" line per account (sum of account_index_column).
+    # One "- <heading>: $X" line per account (sum of account_index_column).
     account_index: bool
     account_index_label: str
     account_index_column: str
@@ -215,9 +304,9 @@ class Contract:
     section_totals: tuple[Total, ...]
 
     def __post_init__(self) -> None:
-        # Fail at import, not mid-run, on an uncompilable pattern.
-        for rule in self.drop_rows:
-            re.compile(rule.regex)
+        # Fail at import, not mid-run: wrong types (incl. the missing-comma
+        # tuple typo) and uncompilable patterns. DropRow compiles its own regex.
+        _check_fields(self)
         if self.as_of_pattern:
             re.compile(self.as_of_pattern)
 
@@ -231,15 +320,17 @@ CONTRACT = Contract(
         "Account name": "Account Name",
     },
     drop_columns=(),
-    drop_rows=(DropRow(column="Account Number", regex="Date downloaded"),),
+    drop_rows=(),
     footer_markers=(
+        # Matched anywhere in the row, so it works whatever column the
+        # footer text lands in. as_of is extracted before this runs.
+        "date downloaded",
         "the data and information in this spreadsheet",
         "brokerage services are provided by fidelity brokerage",
         "for informational purposes only",
         "fidelity.com",
     ),
     drop_duplicate_columns=True,
-    group_by="Account Number",
     heading_template="{Account Name} ({Account Number})",
     summary_header=True,
     as_of_pattern=r"Date downloaded\s+(.+)",
@@ -260,6 +351,7 @@ CONTRACT = Contract(
 class AccountSection:
     account_name: str
     account_number: str
+    heading: str
     rows: int
     positions: int
     position_pairs: Counter
@@ -290,11 +382,19 @@ def _load_and_clean(csv_path: Path, contract: Contract) -> tuple[pd.DataFrame, s
     # Read with csv.reader and build the frame directly so every cell is a str
     # by construction — no dtype coercion and no NaN (a blank source cell would
     # otherwise render as a phantom "nan"; see CLAUDE.md "String preservation").
-    # Rows are padded or truncated to the header width: Fidelity's footer rows
-    # are short, and some exports put a trailing comma on every data row.
+    # Short rows (Fidelity's footer) are padded to the header width. Surplus
+    # fields are dropped only when empty (the trailing-comma export); a
+    # non-empty surplus field would be silently lost data, so it aborts.
     with open(csv_path, encoding="utf-8-sig", newline="") as f:
         header, *rows = list(csv.reader(f)) or [[]]
     width = len(header)
+    for row_no, r in enumerate(rows, start=2):  # CSV records; 1 is the header
+        extra = [c for c in r[width:] if c.strip()]
+        if extra:
+            raise AssertionError(
+                f"FAIL CSV row {row_no} has {len(r)} fields but the header has {width}; "
+                f"extra non-empty values would be lost: {extra[:5]}"
+            )
     df = pd.DataFrame([(r + [""] * width)[:width] for r in rows if r], columns=header)
 
     # Apply column aliases before anything else
@@ -315,10 +415,13 @@ def _load_and_clean(csv_path: Path, contract: Contract) -> tuple[pd.DataFrame, s
         if list(df.columns).count(col) > 1:
             raise AssertionError(f"FAIL required column duplicated: '{col}'")
 
-    # Baseline position pairs for loss detection
+    # Baseline position pairs for loss detection. Only rows with an Account
+    # Number can be holdings (an empty one aborts at render anyway); this keeps
+    # a one-field footer row out of the baseline when its text lands in Symbol.
     raw_position_pairs: Counter = Counter()
-    if "Symbol" in df.columns and "Current value" in df.columns:
-        raw_position_pairs = _position_pairs(df["Symbol"], df["Current value"])
+    if all(c in df.columns for c in ("Account Number", "Symbol", "Current value")):
+        held = df[df["Account Number"].str.strip() != ""]
+        raw_position_pairs = _position_pairs(held["Symbol"], held["Current value"])
 
     # Extract "As of" timestamp BEFORE drop_rows strips it. The Fidelity
     # "Date downloaded ..." footer is otherwise lost to cleanup.
@@ -351,6 +454,12 @@ def _load_and_clean(csv_path: Path, contract: Contract) -> tuple[pd.DataFrame, s
             df = df[~row_text.str.contains(pattern, regex=True, na=False)]
 
     _verify_duplicate_columns(df, removed_duplicates)
+
+    if contract.summary_header or contract.section_header:
+        total_cols = {t.column for t in contract.portfolio_totals + contract.section_totals}
+        if contract.account_index:
+            total_cols.add(contract.account_index_column)
+        _warn_on_total_columns(df, total_cols)
 
     # ---- Verification ----
     for col in REQUIRED_COLUMNS:
@@ -388,7 +497,7 @@ def _render_section(df_account: pd.DataFrame, contract: Contract) -> tuple[str, 
 
     # disable_numparse: tabulate otherwise reformats numeric-looking strings
     # ("1.50" -> "1.5", "0.000" -> "0") — a string-preservation violation.
-    table = df_account.to_markdown(index=False, disable_numparse=True)
+    table = _markdown_safe(df_account).to_markdown(index=False, disable_numparse=True)
     if not table:
         raise AssertionError(f"FAIL markdown serialization produced no output for account {acct_num_raw}")
 
@@ -402,8 +511,10 @@ def _render_section(df_account: pd.DataFrame, contract: Contract) -> tuple[str, 
     section = AccountSection(
         account_name=acct_name_raw,
         account_number=acct_num_raw,
+        heading=heading,
         rows=len(df_account),
-        positions=len(position_pairs),
+        # Holdings, not distinct (symbol, value) pairs: identical lots count.
+        positions=sum(position_pairs.values()),
         position_pairs=position_pairs,
         totals=totals,
     )
@@ -426,7 +537,7 @@ def convert_csv(csv_path: Path, out_dir: Path, dry_run: bool, contract: Contract
     combined_pairs: Counter = Counter()
     index_lines: list[str] = []
 
-    for _, group in df.groupby(contract.group_by, sort=False):
+    for _, group in df.groupby("Account Number", sort=False):
         section_md, section = _render_section(group, contract)
         sections_md.append(section_md)
         accounts.append(section)
@@ -435,7 +546,7 @@ def convert_csv(csv_path: Path, out_dir: Path, dry_run: bool, contract: Contract
         if index_enabled:
             total_str = _sum_column(group, contract.account_index_column)
             suffix = f": {total_str}" if total_str else ""
-            index_lines.append(f"- {section.account_name} ({section.account_number}){suffix}")
+            index_lines.append(f"- {section.heading}{suffix}")
 
     # ---- Global positions-loss check (across all accounts) ----
     if raw_position_pairs:
@@ -510,7 +621,7 @@ def print_result_verbose(r: ConvertResult) -> None:
               + ", ".join(repr(c) for c in r.dropped_duplicates))
     print()
     for section in r.accounts:
-        print(f"## {section.account_name} ({section.account_number})  rows={section.rows} pos={section.positions}")
+        print(f"## {section.heading}  rows={section.rows} pos={section.positions}")
         for label, value in section.totals:
             print(f"   {label}: {value}")
         for (sym, val), count in sorted(section.position_pairs.items()):

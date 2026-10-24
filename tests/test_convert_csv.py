@@ -1,3 +1,4 @@
+import re
 from dataclasses import replace
 
 import pandas as pd
@@ -15,7 +16,8 @@ def test_happy_path_dry_run(fixture_csv_path, contract, tmp_path):
     assert isinstance(section, AccountSection)
     assert section.account_name == "Individual - TOD"
     assert section.account_number == "X10000001"
-    assert section.positions == 5
+    # 6 holdings: the two identical VTI lots count separately.
+    assert section.positions == 6
     assert result.dry_run is True
     assert result.size == "dry-run"
     assert not result.out_path.exists()
@@ -190,7 +192,7 @@ def test_column_aliases_applied(fixture_df, contract, write_csv, tmp_path):
     aliased_contract = replace(contract, column_aliases={"Ticker": "Symbol"})
 
     result = convert_csv(csv, tmp_path, dry_run=True, contract=aliased_contract)
-    assert result.accounts[0].positions == 5
+    assert result.accounts[0].positions == 6
 
 
 def test_drop_columns_removes_columns(fixture_csv_path, contract, tmp_path):
@@ -325,3 +327,92 @@ def test_duplicated_account_number_rejected_when_dedup_off(tmp_path):
     ])
     with pytest.raises(AssertionError, match="required column duplicated: 'Account Number'"):
         convert_csv(path, tmp_path, dry_run=True, contract=replace(CONTRACT, drop_duplicate_columns=False))
+
+
+# ---- Review fixes (v4.1.0) ----
+
+def test_wide_row_with_data_aborts(tmp_path):
+    # Trailing empty fields are tolerated (see test_trailing_comma_rows...),
+    # but a non-empty surplus field would be silently lost.
+    path = _write_raw_csv(tmp_path / "wide.csv", [
+        ["Account Number", "Account Name", "Symbol", "Current value"],
+        ["X1", "Brokerage", "VTI", "$100.00", "LOST"],
+    ])
+    with pytest.raises(AssertionError, match=r"CSV row 2 has 5 fields but the header has 4.*'LOST'"):
+        convert_csv(path, tmp_path, dry_run=True)
+
+
+def test_pipe_and_newline_cannot_break_table(tmp_path):
+    path = _write_raw_csv(tmp_path / "pipes.csv", [
+        ["Account Number", "Account Name", "Symbol", "Description", "Current value"],
+        ["X1", "Brokerage", "VTI", "A | B\nC", "$100.00"],
+    ])
+    result = convert_csv(path, tmp_path, dry_run=False)
+    table = [l for l in result.out_path.read_text(encoding="utf-8").splitlines() if l.startswith("|")]
+    assert len(table) == 3  # header, separator, one data row
+    assert r"A \| B C" in table[2]
+    # Every line has the same number of unescaped cell separators.
+    assert len({len(re.findall(r"(?<!\\)\|", l)) for l in table}) == 1
+
+
+def test_drop_columns_on_deduplicated_column(fixture_csv_path, tmp_path):
+    # "Last price" has a removed duplicate ("Last Price"); dropping it must not
+    # crash the duplicate verification.
+    result = convert_csv(fixture_csv_path, tmp_path, dry_run=True,
+                         contract=replace(CONTRACT, drop_columns=("Last price",)))
+    assert result.cols == 40
+
+
+def test_unparseable_total_cell_warns_and_is_excluded(tmp_path, capsys):
+    path = _write_raw_csv(tmp_path / "bad_value.csv", [
+        ["Account Number", "Account Name", "Symbol", "Current value"],
+        ["X1", "Brokerage", "VTI", "$100.00"],
+        ["X1", "Brokerage", "AAPL", "n/a*"],
+        ["X1", "Brokerage", "CASH", "--"],
+    ])
+    result = convert_csv(path, tmp_path, dry_run=True)
+    assert result.portfolio_totals == [("Total Current Value", "$100.00")]
+    err = capsys.readouterr().err
+    # Reported once (not once per account/index/portfolio), naming the cell;
+    # the '--' sentinel is not reported.
+    assert err.count("unparseable cell") == 1
+    assert "'n/a*'" in err and "'--'" not in err
+
+
+def test_totals_are_exact_and_never_negative_zero(tmp_path):
+    path = _write_raw_csv(tmp_path / "exact.csv", [
+        ["Account Number", "Account Name", "Symbol", "Current value"],
+        ["X1", "Brokerage", "A", "$0.30"],
+        ["X1", "Brokerage", "B", "-$0.10"],
+        ["X1", "Brokerage", "C", "($0.20)"],
+    ])
+    result = convert_csv(path, tmp_path, dry_run=True)
+    assert result.portfolio_totals == [("Total Current Value", "$0.00")]
+
+
+def test_footer_removed_when_account_number_is_not_first(tmp_path):
+    # Fidelity writes the footer as a one-field row, so its text lands in the
+    # first column — here Symbol, not Account Number. The marker matches anywhere.
+    path = _write_raw_csv(tmp_path / "reordered.csv", [
+        ["Symbol", "Account Number", "Account Name", "Current value"],
+        ["VTI", "X1", "Brokerage", "$100.00"],
+        ["Date downloaded Apr-03-2026 12:01 p.m ET"],
+    ])
+    result = convert_csv(path, tmp_path, dry_run=True)
+    assert result.as_of == "Apr-03-2026 12:01 p.m ET"
+    assert result.rows == 1
+
+
+def test_account_index_follows_heading_template(fixture_csv_path, tmp_path):
+    result = convert_csv(fixture_csv_path, tmp_path, dry_run=False,
+                         contract=replace(CONTRACT, heading_template="{Account Name}"))
+    body = result.out_path.read_text(encoding="utf-8")
+    assert "## Individual - TOD\n" in body
+    assert "- Individual - TOD: $100,000.00" in body
+
+
+def test_fixture_df_keeps_verbatim_headers(fixture_df):
+    # Fixtures load like the script reads: no ".1" mangling, no NaN.
+    assert list(fixture_df.columns).count("Total gain/loss $") == 2
+    assert not any(c.endswith(".1") for c in fixture_df.columns)
+    assert not fixture_df.isna().any().any()

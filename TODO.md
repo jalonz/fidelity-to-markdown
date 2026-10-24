@@ -4,7 +4,7 @@ Pending work for `fidelity_csv_to_markdown.py`.
 
 ## Open
 
-- [ ] **CI**. Add a GitHub Actions workflow running `pytest` on push and PR.
+- [ ] **CI**. Add a GitHub Actions workflow (`astral-sh/setup-uv`) running `uv run --with-requirements fidelity_csv_to_markdown.py --with pytest pytest` on push and PR.
 
 ## Done
 
