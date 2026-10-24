@@ -20,6 +20,8 @@ is inline and shares the script's version.
   header names can no longer turn a column lookup into a frame, and there is
   no NaN. Cleanup tracks active column positions over full-width raw rows, so
   removed duplicate copies are verified without index alignment.
+- CI: `.github/workflows/tests.yml` runs pytest on Python 3.10 and 3.14 for
+  every PR and push to `main`.
 - Simplifications: `_read_csv` extracted; footer filter flattened; `main()`
   tidied (`show_bar`, no empty branch). Tests: pandas fixtures replaced by a
   small `Sheet` helper (`fixture_sheet`, `read_sheet`) built on `_read_csv`;

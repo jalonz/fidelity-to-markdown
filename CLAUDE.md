@@ -62,6 +62,8 @@ Automated test suite under `tests/` covers `convert_csv()` directly plus CLI beh
 uv run --with pytest pytest     # or: python3 -m pytest (with pytest installed)
 ```
 
+CI (`.github/workflows/tests.yml`) runs the same suite on Python 3.10 (the declared minimum) and 3.14 for every PR and every push to `main`. If you raise `requires-python` or start using newer syntax, update the matrix to match.
+
 The suite exercises the happy path, multi-account sectioning (per-account subtotals, account index, empty-`Symbol` tolerance), every validation assert (one bad account aborts the file, output collision, missing/duplicated required columns, duplicate-column dedup and mismatch abort, non-empty surplus fields, empty post-cleanup, positions lost during cleanup), contract construction failures (mistyped field, wrong-typed value, bad regex), verbatim numeric strings and duplicate headers, markdown escaping, exact `Decimal` totals and unparseable-cell warnings, and CLI ergonomics (mutex `--verbose`/`--quiet`, structured error output, case-insensitive `--csvdir` glob). Fixture lives at `tests/fixtures/fidelity_positions_test.csv`; add more fixtures alongside as needed. Edit fixtures through conftest's `Sheet` (`fixture_sheet`, `read_sheet`, `write_csv`), which loads them with the script's own `_read_csv`, so tests see exactly what the script sees (verbatim duplicate headers, all-str cells, footer rows). Do not commit real Fidelity CSVs as fixtures — anonymize or synthesize them.
 
 For manual spot-checking after a `CONTRACT` change, `--verbose` traces block-level processing.
