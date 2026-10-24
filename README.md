@@ -16,46 +16,44 @@ Converts Fidelity "Positions" CSV exports into markdown format. Supports single-
 >
 > **No silent overwrites.** If the stem-named output file already exists in the output directory, the script aborts rather than overwriting it. Remove or move the existing file to rerun.
 >
-> **Portfolio header above the sections.** Each file opens with an `**As of:**` line (extracted from the Fidelity `Date downloaded` footer), a portfolio `**Total Current Value:**` line (sum of the `Current value` column across all accounts — not a Fidelity-quoted balance), and an account index listing each account with its subtotal. Each section then carries its own subtotal. All totals are plain single-column sums (no ratios or percentages-of-portfolio). Configured under `output.markdown.summary_header` / `section_header` / `sections` in the YAML contract; set `enabled: false` on a header block to suppress it.
+> **Portfolio header above the sections.** Each file opens with an `**As of:**` line (extracted from the Fidelity `Date downloaded` footer), a portfolio `**Total Current Value:**` line (sum of the `Current value` column across all accounts — not a Fidelity-quoted balance), and an account index listing each account with its subtotal. Each section then carries its own subtotal. All totals are plain single-column sums (no ratios or percentages-of-portfolio). Configured by the `summary_header` / `section_header` / `account_index` fields of the inline `CONTRACT`; set one to `False` to suppress that block.
 
 ---
 
 ## Setup
 
+The script is self-contained: dependencies are declared inline ([PEP 723](https://peps.python.org/pep-0723/)), so with [uv](https://docs.astral.sh/uv/) installed there is no setup step — just run it:
+
 ```bash
-./setup_env.sh
+uv run fidelity_csv_to_markdown.py --csv path/to/positions.csv
+# or, since the shebang invokes uv:
+./fidelity_csv_to_markdown.py --csv path/to/positions.csv
 ```
 
-Creates a `.venv` virtual environment and installs dependencies from `requirements.txt`.
-
-To activate in subsequent sessions:
+Without uv, create a venv from `requirements.txt`:
 
 ```bash
-source activate_env.sh
+./setup_env.sh            # first time
+source activate_env.sh    # subsequent sessions
+python fidelity_csv_to_markdown.py --csv path/to/positions.csv
 ```
 
 ---
 
 ## Usage
 
-### CSV → Markdown
-
 ```
-usage: fidelity_csv_to_markdown.py (--csv FILE | --csvdir DIR) --contract FILE [--outdir DIR] [--dry-run] [--verbose] [--quiet]
+usage: fidelity_csv_to_markdown.py (--csv FILE | --csvdir DIR) [--outdir DIR] [--dry-run] [--verbose | --quiet]
 ```
 
 Single file:
 ```bash
-python fidelity_csv_to_markdown.py \
-  --csv path/to/positions.csv \
-  --contract fidelity_csv_to_markdown.yaml
+uv run fidelity_csv_to_markdown.py --csv path/to/positions.csv
 ```
 
 Batch (all CSVs in a directory):
 ```bash
-python fidelity_csv_to_markdown.py \
-  --csvdir path/to/exports/ \
-  --contract fidelity_csv_to_markdown.yaml
+uv run fidelity_csv_to_markdown.py --csvdir path/to/exports/
 ```
 
 **Arguments:**
@@ -64,7 +62,6 @@ python fidelity_csv_to_markdown.py \
 | --- | --- | --- |
 | `--csv` | Yes (or `--csvdir`) | Single Fidelity positions CSV |
 | `--csvdir` | Yes (or `--csv`) | Directory of CSVs to process |
-| `--contract` | Yes | Path to the YAML contract file |
 | `--outdir` | No | Output directory (default: alongside each input file) |
 | `--dry-run` | No | Validate without writing output |
 | `--verbose` | No | Detailed block output per file instead of one-line summary |
@@ -74,7 +71,7 @@ python fidelity_csv_to_markdown.py \
 
 ## Fidelity Portal Column Selection
 
-The script is contract-driven — optional columns can be added, removed, or renamed via the contract without code changes — but the column set below is optimized for LLM portfolio analysis. Four columns are required and the run will abort if any are missing: `Account Name`, `Account Number`, `Symbol`, `Current value`. Configure **My View** in the Fidelity positions page before exporting to include these columns. (My View exports the account columns as `Account number` / `Account name` — lowercase second word; the contract's `column_aliases` normalizes them to the canonical names above, so no manual fixup is needed.) An LLM given this data can reason about allocation, cost basis, embedded gains, income, fund costs, and sector exposure in a single pass.
+The script is contract-driven — optional columns can be added, removed, or renamed by editing `CONTRACT` without touching the conversion logic — but the column set below is optimized for LLM portfolio analysis. Four columns are required and the run will abort if any are missing: `Account Name`, `Account Number`, `Symbol`, `Current value`. Configure **My View** in the Fidelity positions page before exporting to include these columns. (My View exports the account columns as `Account number` / `Account name` — lowercase second word; `CONTRACT.column_aliases` normalizes them to the canonical names above, so no manual fixup is needed.) An LLM given this data can reason about allocation, cost basis, embedded gains, income, fund costs, and sector exposure in a single pass.
 
 **Account & position identity**
 - Account Number
@@ -131,36 +128,31 @@ The script is contract-driven — optional columns can be added, removed, or ren
 - Industry group
 - Sub industry
 
-> Fidelity appends a duplicate summary block at the end of each row repeating cost basis, gain/loss, last price, and change (`Change $` appears twice). These duplicate columns are preserved as-is alongside the primary columns.
+> Fidelity appends a duplicate summary block at the end of each row repeating cost basis, gain/loss, last price, and change (`Change $` appears twice). These duplicate columns are preserved as-is alongside the primary columns, with their header names verbatim (no `.1` suffixes).
 
 ---
 
-## Contract Files
+## The Contract
 
-Each script is paired with a YAML contract file that externalizes cleanup rules, footer/disclaimer detection markers, output policy, and validation constraints. Contracts are not shared between scripts.
+Cleanup rules, footer/disclaimer detection, sectioning, and totals are declared in the `CONTRACT` constant inside `fidelity_csv_to_markdown.py`, a frozen `Contract` dataclass. It used to be a separate YAML file; it's inline so it is versioned, deployed, and invoked together with the code. There is no `--contract` flag.
 
-| Contract | Used by |
-| --- | --- |
-| `fidelity_csv_to_markdown.yaml` | `fidelity_csv_to_markdown.py` |
+Input cleanup:
 
-Key contract knobs under `input_cleanup`:
+- `column_aliases`: rename incoming columns before processing (e.g. My View's `Account number` → `Account Number`).
+- `drop_columns`: remove columns from the output entirely.
+- `drop_rows`: `DropRow(column, regex)` rules; rows whose column matches are dropped (e.g. `Date downloaded`).
+- `footer_markers`: case-insensitive substrings that mark disclaimer/footer rows for removal. Never use generic brand tokens like `fidelity`, which appear in security names.
 
-- `column_aliases` — rename incoming columns before processing (e.g. handle Fidelity layout changes without renaming downstream).
-- `drop_columns` — remove columns from the output entirely.
-- `drop_rows` — regex-match rows to drop (e.g. `Date downloaded` summary rows).
-- `footer_detection_policy.prefer_disclaimer_markers` — case-insensitive substrings that mark disclaimer/footer rows for removal.
+Output:
 
-And under `output.markdown`:
-
-- `sections.group_by` — column the file is split on (default `Account Number`); `sections.heading_template` — each section's H2 heading, built from that account's first row (e.g. `{Account Name} ({Account Number})`). Account order is first-seen (no sorting).
-- `summary_header` — the **portfolio** header at the top of the file. `.enabled` toggles it; `.as_of.pattern` is a case-insensitive regex searched across every cell *before* `drop_rows` runs (first capture group emitted verbatim); `.totals` is a list of `{label, column}` entries each summing the named column across **all** accounts; `.account_index` (`enabled`, `label`, `total_column`) lists each account with its own subtotal.
-- `section_header` — the **per-account** subtotal printed under each section heading. Same `{label, column}` totals, scoped to that account.
+- `group_by` / `heading_template`: the column the file is split on (default `Account Number`) and each section's H2 heading, built from that account's first row. Account order is first-seen.
+- `summary_header`, `as_of_pattern`, `portfolio_totals`: the **portfolio** header. `as_of_pattern` is a case-insensitive regex searched across every cell *before* `drop_rows` runs (first capture group emitted verbatim). Each `Total(label, column)` sums that column across **all** accounts.
+- `account_index`, `account_index_label`, `account_index_column`: list each account with its own subtotal.
+- `section_header`, `section_totals`: the **per-account** subtotal under each section heading.
 
 Unparseable cells (`--`, blank) are skipped in any sum; a missing column logs a warning and skips that line. All totals are plain pass-through aggregations; see CLAUDE.md "Carve-out for plain aggregation" for the policy boundary.
 
-To adapt the pipeline to a different CSV layout or add cleanup rules, update the contract — the script logic should not need to change.
-
-The contract is schema-checked when it loads: unknown keys, wrong types, and uncompilable regexes in the behavior-bearing blocks abort the run with a list of problems, so a typo (e.g. `heading-template` for `heading_template`) fails loudly instead of silently falling back to a default.
+To adapt to a different CSV layout, edit `CONTRACT`; the conversion functions should not need to change. Mistakes fail loudly: a mistyped field name raises `TypeError` and an invalid regex raises `re.error` as soon as the script loads.
 
 ---
 
@@ -169,7 +161,7 @@ The contract is schema-checked when it loads: unknown keys, wrong types, and unc
 Pytest suite under `tests/` covers `convert_csv()` and CLI behavior.
 
 ```bash
-pip install -r requirements-dev.txt
+pip install -r requirements.txt -r requirements-dev.txt
 pytest
 ```
 

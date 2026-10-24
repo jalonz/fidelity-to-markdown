@@ -1,4 +1,8 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.10"
+# dependencies = ["pandas>=2.2", "tabulate>=0.9"]
+# ///
 """
 fidelity_csv_to_markdown
 
