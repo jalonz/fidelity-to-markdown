@@ -18,11 +18,11 @@ import csv
 from collections import Counter
 from dataclasses import dataclass, fields
 from decimal import Decimal, InvalidOperation
+from pathlib import Path
 import re
 import sys
 import types
 from typing import get_args, get_origin
-from pathlib import Path
 
 import pandas as pd
 
@@ -373,12 +373,9 @@ class ConvertResult:
     dry_run: bool
 
 
-def _load_and_clean(csv_path: Path, contract: Contract) -> tuple[pd.DataFrame, str | None, Counter, list[str]]:
-    """Read, alias, drop duplicate columns, extract as_of, drop rows/columns,
-    strip footers, and verify duplicates and required-column integrity. Returns (cleaned
-    df, as_of, raw position pairs captured before cleanup for loss detection,
-    dropped duplicate column names).
-    """
+def _read_csv(csv_path: Path) -> pd.DataFrame:
+    """Read a CSV into an all-str DataFrame with verbatim (possibly duplicate)
+    headers."""
     # Read with csv.reader and build the frame directly so every cell is a str
     # by construction — no dtype coercion and no NaN (a blank source cell would
     # otherwise render as a phantom "nan"; see CLAUDE.md "String preservation").
@@ -395,11 +392,19 @@ def _load_and_clean(csv_path: Path, contract: Contract) -> tuple[pd.DataFrame, s
                 f"FAIL CSV row {row_no} has {len(r)} fields but the header has {width}; "
                 f"extra non-empty values would be lost: {extra[:5]}"
             )
-    df = pd.DataFrame([(r + [""] * width)[:width] for r in rows if r], columns=header)
+    return pd.DataFrame([(r + [""] * width)[:width] for r in rows if r], columns=header)
+
+
+def _load_and_clean(csv_path: Path, contract: Contract) -> tuple[pd.DataFrame, str | None, Counter, list[str]]:
+    """Read, alias, drop duplicate columns, extract as_of, drop rows/columns,
+    strip footers, and verify duplicates and required-column integrity. Returns (cleaned
+    df, as_of, raw position pairs captured before cleanup for loss detection,
+    dropped duplicate column names).
+    """
+    df = _read_csv(csv_path)
 
     # Apply column aliases before anything else
-    if contract.column_aliases:
-        df = df.rename(columns=contract.column_aliases)
+    df = df.rename(columns=contract.column_aliases)
 
     # Duplicate columns are removed now, before any df[col] lookup, and verified
     # after cleanup below.
@@ -446,12 +451,10 @@ def _load_and_clean(csv_path: Path, contract: Contract) -> tuple[pd.DataFrame, s
     # Footer/disclaimer removal (skip on empty df: agg+axis=1 on zero rows
     # returns a DataFrame instead of a Series in pandas 3.x and crashes the
     # .str accessor)
-    if contract.footer_markers and not df.empty:
-        markers_lc = [m.lower() for m in contract.footer_markers if m.strip()]
-        if markers_lc:
-            row_text = df.agg(" | ".join, axis=1).str.lower()
-            pattern = "|".join(re.escape(m) for m in markers_lc)
-            df = df[~row_text.str.contains(pattern, regex=True, na=False)]
+    markers = [re.escape(m.lower()) for m in contract.footer_markers if m.strip()]
+    if markers and not df.empty:
+        row_text = df.agg(" | ".join, axis=1).str.lower()
+        df = df[~row_text.str.contains("|".join(markers), regex=True, na=False)]
 
     _verify_duplicate_columns(df, removed_duplicates)
 
@@ -686,40 +689,34 @@ def main():
             print(f"ERROR: no CSV files found in {d}", file=sys.stderr)
             sys.exit(1)
 
-    def out_dir_for(csv_path: Path) -> Path:
-        if args.outdir:
-            return Path(args.outdir).expanduser().resolve()
-        return csv_path.parent
-
     total = len(csv_files)
     batch = total > 1
+    show_bar = batch and not args.quiet and not args.verbose
     errors = []
 
     for i, csv_path in enumerate(csv_files, 1):
-        out_dir = out_dir_for(csv_path)
+        out_dir = Path(args.outdir).expanduser().resolve() if args.outdir else csv_path.parent
         if not args.dry_run:
             out_dir.mkdir(parents=True, exist_ok=True)
 
-        if batch and not args.quiet and not args.verbose:
+        if show_bar:
             sys.stdout.write(f"\r{_bar(i, total)}  {csv_path.name:<40}")
             sys.stdout.flush()
 
         try:
             result = convert_csv(csv_path, out_dir, args.dry_run)
 
-            if args.quiet:
-                pass
-            elif args.verbose:
+            if args.verbose:
                 if batch:
                     print(f"\n[{i}/{total}] {csv_path.name}")
                 print_result_verbose(result)
-            else:
+            elif not args.quiet:
                 if batch:
                     sys.stdout.write("\n")
                 print_result_quiet(result)
 
         except Exception as exc:
-            if batch and not args.quiet and not args.verbose:
+            if show_bar:
                 sys.stdout.write("\n")
             elif batch and args.verbose:
                 print(f"\n[{i}/{total}] {csv_path.name}")

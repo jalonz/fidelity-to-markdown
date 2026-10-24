@@ -1,7 +1,7 @@
+import csv
 import re
 from dataclasses import replace
 
-import pandas as pd
 import pytest
 
 from fidelity_csv_to_markdown import CONTRACT, AccountSection, ConvertResult, Total, convert_csv
@@ -199,9 +199,7 @@ def test_drop_columns_removes_columns(fixture_csv_path, contract, tmp_path):
     dropped_contract = replace(contract, drop_columns=("Sector", "Industry"))
 
     result = convert_csv(fixture_csv_path, tmp_path, dry_run=False, contract=dropped_contract)
-    body = result.out_path.read_text(encoding="utf-8")
-    header_line = next(line for line in body.splitlines() if line.startswith("|"))
-    headers = [h.strip() for h in header_line.strip("|").split("|")]
+    headers = _headers(result)
     assert "Sector" not in headers
     assert "Industry" not in headers
     # Sibling columns like "Industry group" should still be present
@@ -216,17 +214,27 @@ def test_numeric_strings_preserved_verbatim(fixture_df, contract, write_csv, tmp
     csv = write_csv(df, "numeric_strings.csv")
 
     result = convert_csv(csv, tmp_path, dry_run=False, contract=contract)
-    cells = [c.strip() for line in result.out_path.read_text(encoding="utf-8").splitlines()
-             if line.startswith("|") for c in line.strip("|").split("|")]
+    cells = [c for line in _table_lines(result) for c in _split_row(line)]
     assert "1.50" in cells
     assert "0.000" in cells
 
 
 def _write_raw_csv(path, rows):
-    import csv as _csv
     with open(path, "w", newline="", encoding="utf-8") as f:
-        _csv.writer(f).writerows(rows)
+        csv.writer(f).writerows(rows)
     return path
+
+
+def _table_lines(result):
+    return [l for l in result.out_path.read_text(encoding="utf-8").splitlines() if l.startswith("|")]
+
+
+def _split_row(line):
+    return [c.strip() for c in line.strip("|").split("|")]
+
+
+def _headers(result):
+    return _split_row(_table_lines(result)[0])
 
 
 def test_duplicate_headers_preserved_verbatim(tmp_path):
@@ -236,9 +244,8 @@ def test_duplicate_headers_preserved_verbatim(tmp_path):
         ["X1", "Brokerage", "VTI", "$100.00", "+$1.00", "+$2.00"],
     ])
     result = convert_csv(path, tmp_path, dry_run=False, contract=replace(CONTRACT, drop_duplicate_columns=False))
-    header = next(l for l in result.out_path.read_text(encoding="utf-8").splitlines() if l.startswith("|"))
-    assert [h.strip() for h in header.strip("|").split("|")].count("Change $") == 2
-    assert "Change $.1" not in header
+    assert _headers(result).count("Change $") == 2
+    assert "Change $.1" not in _table_lines(result)[0]
 
 
 def test_duplicated_required_column_rejected(tmp_path):
@@ -265,11 +272,6 @@ def test_trailing_comma_rows_and_short_footer_rows(tmp_path):
 
 
 # ---- Duplicate columns ----
-
-def _headers(result):
-    line = next(l for l in result.out_path.read_text(encoding="utf-8").splitlines() if l.startswith("|"))
-    return [h.strip() for h in line.strip("|").split("|")]
-
 
 def test_identical_duplicate_columns_dropped(fixture_csv_path, contract, tmp_path):
     # The fixture's appended summary block repeats 8 headers, some differing only
@@ -348,7 +350,7 @@ def test_pipe_and_newline_cannot_break_table(tmp_path):
         ["X1", "Brokerage", "VTI", "A | B\nC", "$100.00"],
     ])
     result = convert_csv(path, tmp_path, dry_run=False)
-    table = [l for l in result.out_path.read_text(encoding="utf-8").splitlines() if l.startswith("|")]
+    table = _table_lines(result)
     assert len(table) == 3  # header, separator, one data row
     assert r"A \| B C" in table[2]
     # Every line has the same number of unescaped cell separators.

@@ -3,13 +3,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-import pytest
-
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = REPO_ROOT / "fidelity_csv_to_markdown.py"
-FIXTURE_CSV = REPO_ROOT / "tests" / "fixtures" / "fidelity_positions_test.csv"
-MULTI_FIXTURE_CSV = REPO_ROOT / "tests" / "fixtures" / "fidelity_positions_multi_account_test.csv"
 
 
 def run_cli(*args, cwd=None):
@@ -48,9 +44,9 @@ def test_help_exits_zero():
     assert "usage:" in proc.stdout.lower()
 
 
-def test_happy_path_dry_run_exits_zero(tmp_path):
+def test_happy_path_dry_run_exits_zero(fixture_csv_path, tmp_path):
     proc = run_cli(
-        "--csv", str(FIXTURE_CSV),
+        "--csv", str(fixture_csv_path),
         "--outdir", str(tmp_path),
         "--dry-run",
     )
@@ -59,10 +55,10 @@ def test_happy_path_dry_run_exits_zero(tmp_path):
     assert "fidelity_positions_test.md" in proc.stdout
 
 
-def test_case_insensitive_csvdir_glob(tmp_path):
+def test_case_insensitive_csvdir_glob(fixture_csv_path, tmp_path):
     # Copy fixture with an uppercase .CSV extension; --csvdir should still pick it up.
     target = tmp_path / "Positions.CSV"
-    shutil.copy(FIXTURE_CSV, target)
+    shutil.copy(fixture_csv_path, target)
 
     proc = run_cli(
         "--csvdir", str(tmp_path),
@@ -74,16 +70,16 @@ def test_case_insensitive_csvdir_glob(tmp_path):
     assert "Positions.md" in proc.stdout
 
 
-def test_contract_flag_removed():
+def test_contract_flag_removed(fixture_csv_path):
     # The contract is inline; an external contract can no longer be supplied.
-    proc = run_cli("--csv", str(FIXTURE_CSV), "--contract", "x.yaml", "--dry-run")
+    proc = run_cli("--csv", str(fixture_csv_path), "--contract", "x.yaml", "--dry-run")
     assert proc.returncode == 2
     assert "unrecognized arguments: --contract" in proc.stderr
 
 
-def test_multi_account_cli_end_to_end(tmp_path):
+def test_multi_account_cli_end_to_end(multi_fixture_csv_path, tmp_path):
     proc = run_cli(
-        "--csv", str(MULTI_FIXTURE_CSV),
+        "--csv", str(multi_fixture_csv_path),
         "--outdir", str(tmp_path),
     )
     assert proc.returncode == 0, proc.stderr
