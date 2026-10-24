@@ -22,20 +22,12 @@ Converts Fidelity "Positions" CSV exports into markdown format. Supports single-
 
 ## Setup
 
-The script is self-contained: dependencies are declared inline ([PEP 723](https://peps.python.org/pep-0723/)), so with [uv](https://docs.astral.sh/uv/) installed there is no setup step — just run it:
+Requires [uv](https://docs.astral.sh/uv/). The script is self-contained: its Python version and dependencies are declared inline ([PEP 723](https://peps.python.org/pep-0723/)), so there is no setup step — uv builds and caches the environment on first run:
 
 ```bash
 uv run fidelity_csv_to_markdown.py --csv path/to/positions.csv
 # or, since the shebang invokes uv:
 ./fidelity_csv_to_markdown.py --csv path/to/positions.csv
-```
-
-Without uv, create a venv from `requirements.txt`:
-
-```bash
-./setup_env.sh            # first time
-source activate_env.sh    # subsequent sessions
-python fidelity_csv_to_markdown.py --csv path/to/positions.csv
 ```
 
 ---
@@ -140,20 +132,22 @@ Input cleanup:
 
 - `column_aliases`: rename incoming columns before processing (e.g. My View's `Account number` → `Account Number`).
 - `drop_columns`: remove columns from the output entirely.
-- `drop_rows`: `DropRow(column, regex)` rules; rows whose column matches are dropped (e.g. `Date downloaded`).
+- `drop_rows`: `DropRow(column, regex)` rules; rows whose column matches (`re.match`) are dropped. Empty by default.
 - `drop_duplicate_columns`: drop repeated headers whose values all match the first occurrence; abort on any mismatch.
-- `footer_markers`: case-insensitive substrings that mark disclaimer/footer rows for removal. Never use generic brand tokens like `fidelity`, which appear in security names.
+- `footer_markers`: case-insensitive substrings that mark disclaimer/footer rows for removal, matched anywhere in the row (including `date downloaded`, so the footer goes regardless of column order). Never use generic brand tokens like `fidelity`, which appear in security names.
 
 Output:
 
-- `group_by` / `heading_template`: the column the file is split on (default `Account Number`) and each section's H2 heading, built from that account's first row. Account order is first-seen.
-- `summary_header`, `as_of_pattern`, `portfolio_totals`: the **portfolio** header. `as_of_pattern` is a case-insensitive regex searched across every cell *before* `drop_rows` runs (first capture group emitted verbatim). Each `Total(label, column)` sums that column across **all** accounts.
+- `heading_template`: each section's H2 heading and account-index line, built from that account's first row (default `{Account Name} ({Account Number})`). Sections are always grouped by `Account Number`, in first-seen order.
+- `summary_header`, `as_of_pattern`, `portfolio_totals`: the **portfolio** header. `as_of_pattern` is a case-insensitive regex searched across every cell *before* any rows are dropped (first capture group emitted verbatim). Each `Total(label, column)` sums that column across **all** accounts.
 - `account_index`, `account_index_label`, `account_index_column`: list each account with its own subtotal.
 - `section_header`, `section_totals`: the **per-account** subtotal under each section heading.
 
-Unparseable cells (`--`, blank) are skipped in any sum; a missing column logs a warning and skips that line. All totals are plain pass-through aggregations; see CLAUDE.md "Carve-out for plain aggregation" for the policy boundary.
+Sums are exact (`Decimal`). Blank and `--` cells are skipped silently; any other cell that doesn't parse as currency is skipped **with a warning** naming it, and a missing column warns and skips that line. All totals are plain pass-through aggregations; see CLAUDE.md "Carve-out for plain aggregation" for the policy boundary.
 
-To adapt to a different CSV layout, edit `CONTRACT`; the conversion functions should not need to change. Mistakes fail loudly: a mistyped field name raises `TypeError` and an invalid regex raises `re.error` as soon as the script loads.
+To adapt to a different CSV layout, edit `CONTRACT`; the conversion functions should not need to change. Mistakes fail loudly as soon as the script loads: a mistyped field name or a wrong-typed value (e.g. `("Sector")` missing its tuple comma) raises `TypeError`, and an invalid regex raises `re.error`.
+
+Cell values are passed through verbatim with one exception: a literal `|` is escaped as `\|` and line breaks become spaces, since either would break the markdown table.
 
 ---
 
@@ -162,8 +156,7 @@ To adapt to a different CSV layout, edit `CONTRACT`; the conversion functions sh
 Pytest suite under `tests/` covers `convert_csv()` and CLI behavior.
 
 ```bash
-pip install -r requirements.txt -r requirements-dev.txt
-pytest
+uv run --with-requirements fidelity_csv_to_markdown.py --with pytest pytest
 ```
 
 ---

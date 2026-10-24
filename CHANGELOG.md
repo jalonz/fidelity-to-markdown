@@ -4,6 +4,40 @@ History for `fidelity_csv_to_markdown.py`. Until 4.0.0 the YAML contract
 carried its own version line (contract 1.0.0 → 3.0.0); since 4.0.0 the contract
 is inline and shares the script's version.
 
+## 4.1.0 — 2026-10-24
+
+Fixes from a full-file review of v4.0.0.
+
+- **uv is required.** `setup_env.sh`, `activate_env.sh`, `requirements.txt`,
+  and `requirements-dev.txt` are removed; the PEP 723 block is the only
+  dependency declaration. Tests: `uv run --with-requirements
+  fidelity_csv_to_markdown.py --with pytest pytest`.
+- Fix: a row with more fields than the header silently lost its surplus
+  values. Empty surplus fields (trailing commas) are still dropped; a
+  non-empty one now aborts.
+- Fix: a `|` or line break inside a cell split the markdown table. `|` is
+  escaped as `\|` and line breaks become spaces — the one deliberate edit to
+  cell content.
+- Fix: `drop_columns` naming a column that had a removed duplicate raised
+  `KeyError`.
+- Fix: a wrong-typed contract value (e.g. `drop_columns=("Sector")`, missing
+  its tuple comma) degraded silently. `__post_init__` now type-checks every
+  field of `Contract`, `Total`, and `DropRow`.
+- Fix: totals are summed with `Decimal` (no float drift, no `-$0.00`). A cell
+  that is neither currency nor blank/`--` now warns (once per column) instead
+  of being dropped from the total silently.
+- Fix: the "pos" count counted distinct (symbol, value) pairs, undercounting
+  identical lots; it now counts holdings.
+- Removed `Contract.group_by` (grouping by `Account Number` is structural);
+  the account index now uses `heading_template`, like the section headings.
+- The `Date downloaded` footer is removed by a footer marker matched anywhere
+  in the row, so it no longer depends on `Account Number` being the first
+  column; the `drop_rows` rule for it is gone. The positions-loss baseline
+  only counts rows with an `Account Number`, so a footer whose text lands in
+  `Symbol` isn't mistaken for a lost holding.
+- Tests load fixtures with `csv.reader` (`read_raw_csv`) instead of
+  `pd.read_csv`, which mangled duplicate headers and turned blanks into NaN.
+
 ## 4.0.0 — 2026-10-24
 
 - **Breaking:** the contract is now inline: the `CONTRACT` constant, a frozen
