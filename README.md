@@ -128,7 +128,7 @@ The script is contract-driven — optional columns can be added, removed, or ren
 - Industry group
 - Sub industry
 
-> Fidelity appends a duplicate summary block at the end of each row repeating cost basis, gain/loss, last price, and change (`Change $` appears twice). These duplicate columns are preserved as-is alongside the primary columns, with their header names verbatim (no `.1` suffixes).
+> Fidelity appends a duplicate summary block at the end of each row repeating cost basis, gain/loss, last price, and change (`Change $` appears twice). With `CONTRACT.drop_duplicate_columns` on (the default), each repeated column (matched ignoring surrounding whitespace and case, e.g. `Last price` / `Last Price`) is dropped when every value equals the first occurrence, and the run aborts if any value differs. Turn it off to keep the copies verbatim.
 
 ---
 
@@ -141,6 +141,7 @@ Input cleanup:
 - `column_aliases`: rename incoming columns before processing (e.g. My View's `Account number` → `Account Number`).
 - `drop_columns`: remove columns from the output entirely.
 - `drop_rows`: `DropRow(column, regex)` rules; rows whose column matches are dropped (e.g. `Date downloaded`).
+- `drop_duplicate_columns`: drop repeated headers whose values all match the first occurrence; abort on any mismatch.
 - `footer_markers`: case-insensitive substrings that mark disclaimer/footer rows for removal. Never use generic brand tokens like `fidelity`, which appear in security names.
 
 Output:

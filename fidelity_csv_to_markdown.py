@@ -88,6 +88,34 @@ def _extract_as_of(df: pd.DataFrame, pattern: str) -> str | None:
     return None
 
 
+def _drop_duplicate_columns(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
+    """Remove columns whose header repeats an earlier one (whitespace/case
+    insensitive) and whose values all match it; keep the first occurrence.
+    Raises AssertionError if a repeated column carries a different value.
+    Returns (df, dropped header names)."""
+    first_seen: dict[str, int] = {}
+    dropped: list[int] = []
+    for i, name in enumerate(df.columns):
+        key = name.strip().casefold()
+        if key not in first_seen:
+            first_seen[key] = i
+            continue
+        j = first_seen[key]
+        kept = df.iloc[:, j].map(norm_str).to_numpy()
+        dup = df.iloc[:, i].map(norm_str).to_numpy()
+        mismatch = (kept != dup).nonzero()[0]
+        if len(mismatch):
+            r = mismatch[0]
+            where = f"Symbol {df['Symbol'].iloc[r]!r}" if list(df.columns).count("Symbol") == 1 else f"row {r + 1}"
+            raise AssertionError(
+                f"FAIL duplicate column {name!r} differs from {df.columns[j]!r} "
+                f"at {where}: {kept[r]!r} vs {dup[r]!r}"
+            )
+        dropped.append(i)
+    names = [df.columns[i] for i in dropped]
+    return df.iloc[:, [i for i in range(df.shape[1]) if i not in set(dropped)]], names
+
+
 def _sum_column(df: pd.DataFrame, col: str) -> str | None:
     """Sum one column verbatim and format as USD — plain pass-through
     aggregation (CLAUDE.md carve-out). Unparseable cells ('--', blank) are
@@ -150,6 +178,10 @@ class Contract:
     # Case-insensitive substrings marking disclaimer/footer rows for removal.
     # Never use generic brand tokens ("fidelity") — they appear in security names.
     footer_markers: tuple[str, ...]
+    # Drop a column whose header repeats an earlier one (ignoring surrounding
+    # whitespace and case) when every value matches it — Fidelity's appended
+    # summary block. Aborts if any value differs, so nothing is lost silently.
+    drop_duplicate_columns: bool
 
     # ---- sections ----
     # Column the file is split on; account order is first-seen (no sorting).
@@ -197,6 +229,7 @@ CONTRACT = Contract(
         "for informational purposes only",
         "fidelity.com",
     ),
+    drop_duplicate_columns=True,
     group_by="Account Number",
     heading_template="{Account Name} ({Account Number})",
     summary_header=True,
@@ -232,16 +265,18 @@ class ConvertResult:
     accounts: list[AccountSection]
     rows: int
     cols: int
+    dropped_duplicates: list[str]
     position_pairs: Counter
     size: str
     version: str
     dry_run: bool
 
 
-def _load_and_clean(csv_path: Path, contract: Contract) -> tuple[pd.DataFrame, str | None, Counter]:
-    """Read, alias, extract as_of, drop rows/columns, strip footers, and verify
-    column/required-column integrity. Returns (cleaned df, as_of, raw position
-    pairs captured before cleanup for loss detection).
+def _load_and_clean(csv_path: Path, contract: Contract) -> tuple[pd.DataFrame, str | None, Counter, list[str]]:
+    """Read, alias, extract as_of, drop rows/columns, strip footers, drop
+    duplicate columns, and verify required-column integrity. Returns (cleaned
+    df, as_of, raw position pairs captured before cleanup for loss detection,
+    dropped duplicate column names).
     """
     # Read with csv.reader and build the frame directly so every cell is a str
     # by construction — no dtype coercion and no NaN (a blank source cell would
@@ -292,6 +327,12 @@ def _load_and_clean(csv_path: Path, contract: Contract) -> tuple[pd.DataFrame, s
             pattern = "|".join(re.escape(m) for m in markers_lc)
             df = df[~row_text.str.contains(pattern, regex=True, na=False)]
 
+    # Duplicate columns — compared only on the rows that survive cleanup, so
+    # footer rows can't cause a spurious mismatch.
+    dropped_duplicates: list[str] = []
+    if contract.drop_duplicate_columns:
+        df, dropped_duplicates = _drop_duplicate_columns(df)
+
     # ---- Verification ----
     # Header names are kept verbatim, so Fidelity's repeated summary block
     # ("Total gain/loss $" twice, etc.) yields duplicate names. That's fine for
@@ -305,7 +346,7 @@ def _load_and_clean(csv_path: Path, contract: Contract) -> tuple[pd.DataFrame, s
     if len(df) == 0:
         raise AssertionError("FAIL no rows after cleanup — check drop rules and footer markers")
 
-    return df, as_of, raw_position_pairs
+    return df, as_of, raw_position_pairs, dropped_duplicates
 
 
 def _render_section(df_account: pd.DataFrame, contract: Contract) -> tuple[str, AccountSection]:
@@ -360,7 +401,7 @@ def convert_csv(csv_path: Path, out_dir: Path, dry_run: bool, contract: Contract
     Convert one CSV to a sectioned markdown file (one section per account).
     Raises on failure. Does not print anything.
     """
-    df, as_of, raw_position_pairs = _load_and_clean(csv_path, contract)
+    df, as_of, raw_position_pairs, dropped_duplicates = _load_and_clean(csv_path, contract)
 
     header_enabled = contract.summary_header
     index_enabled = header_enabled and contract.account_index
@@ -428,6 +469,7 @@ def convert_csv(csv_path: Path, out_dir: Path, dry_run: bool, contract: Contract
         accounts=accounts,
         rows=len(df),
         cols=len(df.columns),
+        dropped_duplicates=dropped_duplicates,
         position_pairs=combined_pairs,
         size=size,
         version=__version__,
@@ -449,6 +491,9 @@ def print_result_verbose(r: ConvertResult) -> None:
         print(f"{label.lower()}  {value}")
     tag = " [dry-run]" if r.dry_run else ""
     print(f"checks    ✓ columns intact  ✓ no losses{tag}")
+    if r.dropped_duplicates:
+        print(f"deduped   {len(r.dropped_duplicates)} identical duplicate columns: "
+              + ", ".join(repr(c) for c in r.dropped_duplicates))
     print()
     for section in r.accounts:
         print(f"## {section.account_name} ({section.account_number})  rows={section.rows} pos={section.positions}")

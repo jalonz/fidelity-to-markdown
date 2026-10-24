@@ -23,6 +23,10 @@ is inline and shares the script's version.
 - One `_sum_column` helper backs the portfolio totals, the section subtotals,
   and the account index.
 - Changelog moved from the module docstring to this file.
+- `CONTRACT.drop_duplicate_columns` (on): drop columns whose header repeats an
+  earlier one (whitespace/case-insensitive) when every value matches; abort on
+  any mismatch. Removes Fidelity's appended summary block (8 columns in the
+  fixture). `--verbose` lists the dropped headers.
 - PEP 723 inline script metadata: `uv run fidelity_csv_to_markdown.py ...` works
   with no manual venv.
 

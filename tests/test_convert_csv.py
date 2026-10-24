@@ -3,7 +3,7 @@ from dataclasses import replace
 import pandas as pd
 import pytest
 
-from fidelity_csv_to_markdown import AccountSection, ConvertResult, Total, convert_csv
+from fidelity_csv_to_markdown import CONTRACT, AccountSection, ConvertResult, Total, convert_csv
 
 
 def test_happy_path_dry_run(fixture_csv_path, contract, tmp_path):
@@ -233,7 +233,7 @@ def test_duplicate_headers_preserved_verbatim(tmp_path):
         ["Account Number", "Account Name", "Symbol", "Current value", "Change $", "Change $"],
         ["X1", "Brokerage", "VTI", "$100.00", "+$1.00", "+$2.00"],
     ])
-    result = convert_csv(path, tmp_path, dry_run=False)
+    result = convert_csv(path, tmp_path, dry_run=False, contract=replace(CONTRACT, drop_duplicate_columns=False))
     header = next(l for l in result.out_path.read_text(encoding="utf-8").splitlines() if l.startswith("|"))
     assert [h.strip() for h in header.strip("|").split("|")].count("Change $") == 2
     assert "Change $.1" not in header
@@ -244,8 +244,9 @@ def test_duplicated_required_column_rejected(tmp_path):
         ["Account Number", "Account Name", "Symbol", "Current value", "Current value"],
         ["X1", "Brokerage", "VTI", "$100.00", "$100.00"],
     ])
+    # With dedup on, an identical copy is simply dropped; the guard covers dedup off.
     with pytest.raises(AssertionError, match="required column duplicated: 'Current value'"):
-        convert_csv(path, tmp_path, dry_run=True)
+        convert_csv(path, tmp_path, dry_run=True, contract=replace(CONTRACT, drop_duplicate_columns=False))
 
 
 def test_trailing_comma_rows_and_short_footer_rows(tmp_path):
@@ -259,3 +260,39 @@ def test_trailing_comma_rows_and_short_footer_rows(tmp_path):
     assert result.as_of == "Apr-03-2026 12:01 p.m ET"
     assert result.rows == 1
     assert result.cols == 4
+
+
+# ---- Duplicate columns ----
+
+def _headers(result):
+    line = next(l for l in result.out_path.read_text(encoding="utf-8").splitlines() if l.startswith("|"))
+    return [h.strip() for h in line.strip("|").split("|")]
+
+
+def test_identical_duplicate_columns_dropped(fixture_csv_path, contract, tmp_path):
+    # The fixture's appended summary block repeats 8 headers, some differing only
+    # by leading space or case ("Last price" / "Last Price"); values all match.
+    result = convert_csv(fixture_csv_path, tmp_path, dry_run=False, contract=contract)
+    headers = _headers(result)
+    assert result.cols == 41
+    assert len(result.dropped_duplicates) == 8
+    assert len({h.casefold() for h in headers}) == len(headers)
+    # First occurrence kept, verbatim.
+    assert "Last price" in headers and "Last Price" not in headers
+
+
+def test_duplicate_column_mismatch_aborts(tmp_path):
+    path = _write_raw_csv(tmp_path / "dup_mismatch.csv", [
+        ["Account Number", "Account Name", "Symbol", "Current value", "Change $", " Change $"],
+        ["X1", "Brokerage", "VTI", "$100.00", "+$1.00", "+$1.00"],
+        ["X1", "Brokerage", "AAPL", "$50.00", "+$2.00", "+$9.99"],
+    ])
+    with pytest.raises(AssertionError, match=r"duplicate column ' Change \$' differs from 'Change \$' at Symbol 'AAPL'"):
+        convert_csv(path, tmp_path, dry_run=True)
+
+
+def test_duplicate_columns_kept_when_disabled(fixture_csv_path, contract, tmp_path):
+    result = convert_csv(fixture_csv_path, tmp_path, dry_run=True,
+                         contract=replace(contract, drop_duplicate_columns=False))
+    assert result.cols == 49
+    assert result.dropped_duplicates == []
